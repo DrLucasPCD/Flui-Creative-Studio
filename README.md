@@ -1,4 +1,4 @@
-# Voz em Legenda
+# Flui Creative Studio
 
 Protótipo de editor de legendas guiado por roteiro, preparado para hospedagem no Netlify.
 
