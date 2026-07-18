@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="Editor de legendas guiado pela sua voz e pelo seu roteiro."
+    />
+    <meta name="theme-color" content="#070b0e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Voz em Legenda" />
+    <meta name="format-detection" content="telephone=no" />
+    <title>Voz em Legenda</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@600;800&family=Atkinson+Hyperlegible:wght@700&family=Bebas+Neue&family=IBM+Plex+Sans:wght@600;700&family=Inter:wght@600;800&family=Kanit:wght@600;800&family=Lato:wght@700;900&family=League+Spartan:wght@600;800&family=Manrope:wght@600;800&family=Montserrat:wght@600;800&family=Noto+Sans:wght@600;800&family=Nunito+Sans:wght@600;800&family=Open+Sans:wght@600;800&family=Oswald:wght@600;700&family=Outfit:wght@600;800&family=Poppins:wght@600;800&family=Raleway:wght@600;800&family=Roboto:wght@700;900&family=Source+Sans+3:wght@600;800&display=swap" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
+    <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
+    <link rel="stylesheet" href="styles.css?v=75" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Voz em Legenda">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>
+          <strong>Voz em Legenda</strong>
+          <small>Projeto local</small>
+        </span>
+      </a>
+
+      <div class="project-status" id="projectStatus" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>Pronto para começar</span>
+      </div>
+
+      <div class="header-actions">
+        <label class="button button-secondary upload-button" for="videoInput">
+          <span aria-hidden="true">＋</span>
+          Abrir vídeo
+        </label>
+        <input id="videoInput" type="file" accept="video/*,.mov" hidden />
+        <select id="exportFormat" class="select compact export-select" aria-label="Formato de exportação">
+          <option value="video-1080" selected>1080p</option>
+          <option value="video-4k">4K</option>
+          <option value="video-720">720p</option>
+          <option value="srt">SRT</option>
+          <option value="vtt">VTT</option>
+          <option value="json">Projeto</option>
+        </select>
+        <select id="exportFrameRate" class="select compact frame-rate-select" aria-label="Quadros por segundo da exportação">
+          <option value="24">24 FPS</option>
+          <option value="30" selected>30 FPS</option>
+          <option value="60">60 FPS</option>
+        </select>
+        <button class="button button-primary" id="exportButton" type="button" disabled>
+          <span aria-hidden="true">↓</span>
+          Exportar
+        </button>
+      </div>
+    </header>
+
+    <nav class="mobile-workspace-tabs" aria-label="Áreas do editor">
+      <button class="active" type="button" data-mobile-target="videoEditor" aria-current="page">Vídeo</button>
+      <button type="button" data-mobile-target="scriptEditor">Roteiro</button>
+      <button type="button" data-mobile-target="reviewEditor">Revisão</button>
+    </nav>
+
+    <main class="workspace">
+      <aside class="panel script-panel tool-panel script-tools" id="scriptEditor" data-tool-panel="script" aria-labelledby="scriptTitle" hidden>
+        <div class="panel-heading">
+          <div>
+            <span class="step-label">ETAPA 1</span>
+            <h1 id="scriptTitle">Roteiro</h1>
+          </div>
+          <span class="count" id="scriptCount">0 palavras</span>
+        </div>
+
+        <textarea
+          id="scriptInput"
+          spellcheck="true"
+          placeholder="Cole aqui o texto correto do vídeo..."
+          aria-label="Texto correto do vídeo"
+        ></textarea>
+
+        <div class="script-actions">
+          <button class="text-button" id="sampleButton" type="button">Usar roteiro de teste</button>
+          <button class="text-button danger-text" id="clearScriptButton" type="button">Limpar</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="control-group">
+          <label for="captionLength">Tamanho dos trechos</label>
+          <select id="captionLength" class="select">
+            <option value="short">Curto</option>
+            <option value="balanced" selected>Equilibrado</option>
+            <option value="long">Longo</option>
+          </select>
+        </div>
+
+        <button class="button button-generate" id="generateButton" type="button" disabled>
+          <span aria-hidden="true">✦</span>
+          Sincronizar roteiro
+        </button>
+
+        <button class="button button-secondary auto-caption-button" id="autoCaptionButton" type="button" disabled>
+          <span aria-hidden="true">◉</span>
+          <span id="autoCaptionLabel">Gerar legenda automática</span>
+        </button>
+
+        <p class="privacy-note">
+          <span aria-hidden="true">●</span>
+          O vídeo permanece neste dispositivo.
+        </p>
+      </aside>
+
+      <section class="stage" id="videoEditor" aria-label="Prévia do vídeo">
+        <div class="video-shell" id="videoShell">
+          <div class="empty-video" id="emptyVideo">
+            <span class="empty-icon" aria-hidden="true">▶</span>
+            <strong>Abra um vídeo</strong>
+            <span>MP4, MOV ou WebM</span>
+          </div>
+          <video id="video" playsinline preload="metadata"></video>
+          <canvas class="lut-preview-canvas" id="lutPreviewCanvas" hidden aria-hidden="true"></canvas>
+          <div class="cut-transition-overlay" id="cutTransitionOverlay" hidden></div>
+          <div class="media-overlay-layer" id="mediaOverlayLayer" aria-label="Imagens sobre o vídeo"></div>
+          <div
+            class="caption-overlay position-bottom template-editorial"
+            id="captionOverlay"
+            role="button"
+            tabindex="0"
+            aria-label="Arraste para posicionar a legenda"
+            hidden
+          >
+            Sua legenda aparece aqui
+          </div>
+        </div>
+
+        <div class="quick-sync-actions">
+          <button class="quick-sync-button" id="syncNextButton" type="button" disabled>
+            <span class="sync-symbol" aria-hidden="true">↦</span>
+            <span>Próxima legenda agora</span>
+            <strong id="syncNextTime">00:00</strong>
+          </button>
+          <button class="quick-sync-button extend-button" id="extendPreviousButton" type="button" disabled>
+            <span class="sync-symbol" aria-hidden="true">↤</span>
+            <span>Estender anterior</span>
+            <strong id="extendPreviousTime">00:00</strong>
+          </button>
+        </div>
+
+        <div class="player-controls">
+          <button class="icon-button" id="backButton" type="button" title="Voltar 5 segundos" disabled>
+            <span aria-hidden="true">↶</span>
+          </button>
+          <button class="play-button" id="playButton" type="button" title="Reproduzir" disabled>
+            <span id="playIcon" aria-hidden="true">▶</span>
+          </button>
+          <button class="icon-button" id="forwardButton" type="button" title="Avançar 5 segundos" disabled>
+            <span aria-hidden="true">↷</span>
+          </button>
+          <span class="time" id="currentTime">00:00</span>
+          <input
+            class="seek"
+            id="seekBar"
+            type="range"
+            min="0"
+            max="100"
+            value="0"
+            step="0.01"
+            aria-label="Posição do vídeo"
+            disabled
+          />
+          <span class="time" id="duration">00:00</span>
+          <button class="icon-button" id="muteButton" type="button" title="Ativar ou desativar som" disabled>
+            <span id="muteIcon" aria-hidden="true">◖</span>
+          </button>
+          <button class="icon-button" id="fullscreenButton" type="button" title="Ver preview em tela cheia" aria-label="Ver preview em tela cheia" disabled>
+            <span aria-hidden="true">⛶</span>
+          </button>
+        </div>
+
+        <section class="cut-editor" id="cutEditor" aria-label="Divisão e remoção de trechos">
+          <div class="cut-action-row">
+            <button class="cut-mark-button" id="cutButton" type="button" disabled>
+              <span aria-hidden="true">[ ]</span>
+              <span id="cutButtonLabel">Remover trecho</span>
+              <strong id="cutMarkTime">00:00</strong>
+            </button>
+            <button class="split-clip-button" id="splitClipButton" type="button" disabled><span aria-hidden="true">[|]</span><span id="splitClipLabel">Dividir no cursor</span></button>
+            <button class="cut-undo-button" id="undoCutButton" type="button" disabled>
+              <span aria-hidden="true">↶</span>
+              Desfazer
+            </button>
+            <label class="toggle-control magnetic-toggle">
+              <input id="magneticCuts" type="checkbox" checked />
+              <span aria-hidden="true"></span>
+              Magnético / unir
+            </label>
+          </div>
+          <div class="cut-timeline" id="cutTimeline">
+            <div class="cut-track" id="cutTrack" aria-label="Faixa de cortes">
+              <div class="cut-layer" id="cutLayer"></div>
+              <div class="cut-playhead" id="cutPlayhead"></div>
+            </div>
+            <div class="transition-palette" id="transitionPalette">
+              <span>Transições</span>
+              <button type="button" draggable="true" data-video-transition="cut">Seco</button>
+              <button type="button" draggable="true" data-video-transition="fade">Fundido</button>
+              <button type="button" draggable="true" data-video-transition="flash">Flash</button>
+              <button type="button" draggable="true" data-video-transition="zoom">Zoom</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="editor-tools" aria-label="Ferramentas de edição">
+          <nav class="tool-tabs" aria-label="Tipo de ferramenta">
+            <button class="active" type="button" data-tool-tab="caption" aria-selected="true">Legenda</button>
+            <button type="button" data-tool-tab="color" aria-selected="false">Cor</button>
+            <button type="button" data-tool-tab="media" aria-selected="false">Mídia</button>
+            <button type="button" data-tool-tab="review" aria-selected="false">Revisão</button>
+            <button type="button" data-tool-tab="script" aria-selected="false">Roteiro</button>
+          </nav>
+
+          <div class="tool-panel caption-tools" data-tool-panel="caption">
+            <div class="caption-presets" aria-label="Estilos rápidos de legenda">
+              <button class="active" type="button" data-caption-preset="editorial"><strong>Editorial</strong><span>Impacto auto</span></button>
+              <button type="button" data-caption-preset="clean"><strong>Padrão</strong><span>Sem editorial</span></button>
+              <button type="button" data-caption-preset="impact"><strong>Impacto</strong><span>Palavra</span></button>
+              <button type="button" data-caption-preset="karaoke"><strong>Karaokê</strong><span>Destaque</span></button>
+              <button type="button" data-caption-preset="duo"><strong>Dupla</strong><span>Editorial</span></button>
+              <button type="button" data-caption-preset="banner"><strong>Faixa</strong><span>Notícia</span></button>
+            </div>
+
+            <div class="caption-quick-row">
+              <div class="caption-mode" aria-label="Modo da legenda">
+                <button class="active" type="button" data-caption-mode="phrase">Frase</button>
+                <button type="button" data-caption-mode="word">Palavra</button>
+                <button type="button" data-caption-mode="karaoke">Karaokê</button>
+              </div>
+              <div class="style-control">
+                <label for="fontSize">Tamanho da fonte</label>
+                <input id="fontSize" type="range" min="8" max="200" value="36" aria-label="Tamanho do texto" />
+                <output id="fontSizeValue" for="fontSize">36 px</output>
+              </div>
+              <div class="caption-global-position">
+                <span>Posição geral</span>
+                <div class="segmented" aria-label="Posição geral das legendas">
+                  <button type="button" data-position="top" title="Subir todas as legendas">↑</button>
+                  <button type="button" data-position="center" title="Centralizar todas as legendas">↕</button>
+                  <button type="button" data-position="bottom" title="Descer todas as legendas">↓</button>
+                </div>
+              </div>
+            </div>
+
+            <label class="caption-live-editor" for="captionLiveText">
+              <span>Texto</span>
+              <textarea id="captionLiveText" maxlength="120" spellcheck="true" placeholder="Selecione uma legenda para editar"></textarea>
+              <output id="captionLiveCount" for="captionLiveText">0 / 120</output>
+            </label>
+
+            <div class="caption-colorbar" aria-label="Cores da legenda">
+              <label class="color-control color-control-wide">
+                Texto
+                <input id="captionTextColor" type="color" value="#ffffff" aria-label="Cor do texto da legenda" />
+                <input id="captionTextRgb" class="rgb-input" type="text" value="255, 255, 255" inputmode="text" autocapitalize="off" spellcheck="false" aria-label="Cor RGB do texto" />
+              </label>
+              <label class="color-control color-control-wide">
+                Destaque
+                <input id="captionHighlightColor" type="color" value="#43ddc3" aria-label="Cor da palavra destacada" />
+                <input id="captionHighlightRgb" class="rgb-input" type="text" value="67, 221, 195" inputmode="text" autocapitalize="off" spellcheck="false" aria-label="Cor RGB do destaque" />
+              </label>
+              <label class="color-control color-control-wide">
+                Fundo
+                <input id="captionBackgroundColor" type="color" value="#000000" aria-label="Cor do fundo da legenda" />
+                <input id="captionBackgroundRgb" class="rgb-input" type="text" value="0, 0, 0" inputmode="text" autocapitalize="off" spellcheck="false" aria-label="Cor RGB do fundo" />
+              </label>
+              <div class="color-swatches" aria-label="Cores rápidas do texto">
+                <button type="button" data-caption-color="#ffffff" style="--swatch: #ffffff" title="Branco"></button>
+                <button type="button" data-caption-color="#f0b64d" style="--swatch: #f0b64d" title="Amarelo"></button>
+                <button type="button" data-caption-color="#56d9ff" style="--swatch: #56d9ff" title="Azul"></button>
+                <button type="button" data-caption-color="#70e39c" style="--swatch: #70e39c" title="Verde"></button>
+                <button type="button" data-caption-color="#ff747c" style="--swatch: #ff747c" title="Vermelho"></button>
+                <button type="button" data-caption-color="#ff7a31" style="--swatch: #ff7a31" title="Laranja"></button>
+                <button type="button" data-caption-color="#d98cff" style="--swatch: #d98cff" title="Roxo"></button>
+              </div>
+            </div>
+
+            <div class="effectsbar" aria-label="Fonte e movimento da legenda">
+              <label>
+                Fonte
+                <select id="fontFamily" class="select effect-select">
+                  <option value="strong">Forte</option>
+                  <option value="clean">Limpa</option>
+                  <option value="rounded">Arredondada</option>
+                  <option value="impact">Impacto</option>
+                  <option value="condensed">Condensada</option>
+                  <option value="futura">Geométrica</option>
+                  <option value="trebuchet">Humanista</option>
+                  <option value="editorial">Editorial</option>
+                  <option value="baskerville">Clássica</option>
+                  <option value="palatino">Elegante</option>
+                  <option value="script">Itálica</option>
+                  <option value="mono">Mono</option>
+                  <optgroup label="Clássicas">
+                    <option value="Arial">Arial</option><option value="Helvetica">Helvetica</option><option value="Helvetica Neue" selected>Helvetica Neue</option><option value="Verdana">Verdana</option><option value="Tahoma">Tahoma</option><option value="Trebuchet MS">Trebuchet MS</option><option value="Calibri">Calibri</option><option value="Lucida Grande">Lucida Grande</option><option value="Gill Sans">Gill Sans</option><option value="Frutiger">Frutiger</option>
+                  </optgroup>
+                  <optgroup label="Modernas">
+                    <option value="Montserrat">Montserrat</option><option value="Roboto">Roboto</option><option value="Inter">Inter</option><option value="Poppins">Poppins</option><option value="Open Sans">Open Sans</option><option value="Lato">Lato</option><option value="Nunito Sans">Nunito Sans</option><option value="Source Sans 3">Source Sans Pro</option><option value="IBM Plex Sans">IBM Plex Sans</option><option value="Noto Sans">Noto Sans</option>
+                  </optgroup>
+                  <optgroup label="Premium">
+                    <option value="Gotham">Gotham</option><option value="Proxima Nova">Proxima Nova</option><option value="Avenir">Avenir</option><option value="Avenir Next">Avenir Next</option><option value="Circular">Circular</option><option value="Sofia Pro">Sofia Pro</option><option value="TT Norms">TT Norms</option><option value="DIN">DIN</option><option value="Univers">Univers</option><option value="Futura">Futura</option>
+                  </optgroup>
+                  <optgroup label="Com personalidade">
+                    <option value="Bebas Neue">Bebas Neue</option><option value="Anton">Anton</option><option value="Kanit">Kanit</option><option value="Archivo">Archivo</option><option value="League Spartan">League Spartan</option><option value="Oswald">Oswald</option><option value="Raleway">Raleway</option><option value="Manrope">Manrope</option><option value="Outfit">Outfit</option><option value="Atkinson Hyperlegible">Atkinson Hyperlegible</option>
+                  </optgroup>
+                  <optgroup label="Mais usadas por criadores">
+                    <option value="Montserrat">Montserrat Bold</option><option value="Roboto">Roboto Bold</option><option value="Poppins">Poppins SemiBold</option><option value="Inter">Inter SemiBold</option><option value="Helvetica">Helvetica Bold</option><option value="Arial">Arial Bold</option><option value="Gotham">Gotham Bold</option><option value="Bebas Neue">Bebas Neue</option><option value="Open Sans">Open Sans SemiBold</option><option value="Avenir Next">Avenir Next DemiBold</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label>
+                Animação
+                <select id="captionAnimation" class="select effect-select">
+                  <option value="none">Sem animação</option>
+                  <option value="editorial" selected>Editorial</option>
+                  <option value="fade">Suave</option>
+                  <option value="pop">Pop</option>
+                  <option value="bounce">Quicar</option>
+                  <option value="slide">Subir</option>
+                  <option value="typewriter">Digitar</option>
+                  <option value="words">Revelar</option>
+                </select>
+              </label>
+              <label>
+                Saída
+                <select id="captionTransition" class="select effect-select">
+                  <option value="cut">Corte</option>
+                  <option value="fade" selected>Fundido</option>
+                  <option value="slide">Deslizar</option>
+                  <option value="zoom">Zoom</option>
+                </select>
+              </label>
+              <label>
+                Caixa
+                <select id="captionCase" class="select effect-select">
+                  <option value="normal" selected>Original</option>
+                  <option value="upper">MAIÚSCULAS</option>
+                  <option value="lower">minúsculas</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="caption-detail-row">
+              <label class="toggle-control">
+                <input id="captionBackground" type="checkbox" />
+                <span aria-hidden="true"></span>
+                Fundo
+              </label>
+              <label class="toggle-control">
+                <input id="captionShadow" type="checkbox" checked />
+                <span aria-hidden="true"></span>
+                Sombra
+              </label>
+              <label class="outline-control">
+                Contorno
+                <input id="captionOutlineWidth" type="range" min="0" max="8" step="1" value="0" />
+                <output id="captionOutlineValue" for="captionOutlineWidth">0</output>
+                <input id="captionOutlineColor" type="color" value="#000000" aria-label="Cor do contorno" />
+              </label>
+            </div>
+          </div>
+
+          <div class="tool-panel color-tools" data-tool-panel="color" hidden>
+            <section class="lut-editor" aria-label="LUT do vídeo">
+              <div class="lut-heading">
+                <span class="lut-icon" aria-hidden="true">◐</span>
+                <span>
+                  <strong>LUT</strong>
+                  <small id="lutStatus">Sem LUT</small>
+                </span>
+              </div>
+              <label class="lut-upload-button" for="lutInput"><span aria-hidden="true">＋</span>Adicionar</label>
+              <input id="lutInput" type="file" accept=".cube,text/plain" hidden />
+              <label class="lut-intensity-control" for="lutIntensity">
+                Intensidade
+                <input id="lutIntensity" type="range" min="0" max="100" value="100" disabled />
+                <output id="lutIntensityValue" for="lutIntensity">100%</output>
+              </label>
+              <button class="lut-remove-button" id="removeLutButton" type="button" title="Remover LUT" disabled><span aria-hidden="true">×</span></button>
+            </section>
+
+            <div class="adjustment-heading">
+              <strong>Ajustes</strong>
+              <button id="resetAdjustmentsButton" type="button">Redefinir</button>
+            </div>
+            <div class="adjustment-grid">
+              <label>Exposição<input type="range" data-video-adjustment="exposure" min="-200" max="200" value="0" /><output>0</output></label>
+              <label>Brilho<input type="range" data-video-adjustment="brightness" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Contraste<input type="range" data-video-adjustment="contrast" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Saturação<input type="range" data-video-adjustment="saturation" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Brilho da cor<input type="range" data-video-adjustment="vibrance" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Temperatura<input type="range" data-video-adjustment="temperature" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Calor<input type="range" data-video-adjustment="warmth" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Matiz<input type="range" data-video-adjustment="tint" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Realces<input type="range" data-video-adjustment="highlights" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Sombras<input type="range" data-video-adjustment="shadows" min="-100" max="100" value="0" /><output>0</output></label>
+              <label>Ponto preto<input type="range" data-video-adjustment="blacks" min="-100" max="100" value="0" /><output>0</output></label>
+            </div>
+          </div>
+
+          <div class="tool-panel media-tools" data-tool-panel="media" hidden>
+            <div class="media-file-inputs" hidden>
+              <input id="sequenceVideoInput" type="file" accept="video/*,.mov" multiple hidden />
+              <input id="overlayVideoInput" type="file" accept="video/*,.mov" multiple hidden />
+              <input id="imageTrackInput" type="file" accept="image/*" multiple hidden />
+              <input id="audioTrackInput" type="file" accept="audio/*" multiple hidden />
+            </div>
+            <div class="media-timeline" id="mediaTimeline" aria-label="Trilhas do projeto">
+              <div class="media-track-row base-video-track-row"><span>V1</span><div class="media-track-lane sequence-track-lane" id="sequenceTrackLane" data-video-track-id="base"><i class="media-playhead" data-media-playhead></i></div></div>
+              <div class="media-track-row"><span>Imagem</span><div class="media-track-lane" id="imageTrackLane"><i class="media-playhead" data-media-playhead></i></div></div>
+              <div class="media-track-row base-audio-track-row"><span>A1</span><div class="media-track-lane dynamic-audio-track-lane" id="audioTrackLane" data-audio-track-id="audio-base"><i class="media-playhead" data-media-playhead></i></div></div>
+            </div>
+            <div class="media-inspector-empty" id="mediaInspectorEmpty">Nenhuma mídia selecionada</div>
+            <div class="media-inspector" id="mediaInspector" hidden>
+              <strong id="mediaInspectorName">Mídia</strong>
+              <label>Início<input id="mediaClipStart" type="number" min="0" step="0.1" /></label>
+              <label>Fim<input id="mediaClipEnd" type="number" min="0" step="0.1" /></label>
+              <label data-overlay-control>Tamanho<input id="mediaClipSize" type="range" min="10" max="150" value="40" /><output id="mediaClipSizeValue">40%</output></label>
+              <label data-overlay-control>Opacidade<input id="mediaClipOpacity" type="range" min="0" max="100" value="100" /><output id="mediaClipOpacityValue">100%</output></label>
+              <label data-overlay-control>Entrada<select id="mediaClipAnimation" class="select"><option value="fade">Suave</option><option value="pop">Pop</option><option value="slide">Deslizar</option><option value="none">Nenhuma</option></select></label>
+              <label data-volume-control>Volume<input id="mediaClipVolume" type="range" min="0" max="200" value="100" /><output id="mediaClipVolumeValue">100%</output></label>
+              <label data-speed-control>Velocidade<select id="mediaClipSpeed" class="select" aria-label="Velocidade do clipe">
+                <option value="0.25">0,25x</option><option value="0.5">0,50x</option><option value="0.75">0,75x</option>
+                <option value="1" selected>1,00x</option><option value="1.25">1,25x</option><option value="1.5">1,50x</option>
+                <option value="1.75">1,75x</option><option value="2">2,00x</option><option value="2.25">2,25x</option>
+                <option value="2.5">2,50x</option><option value="2.75">2,75x</option><option value="3">3,00x</option>
+                <option value="3.25">3,25x</option><option value="3.5">3,50x</option><option value="3.75">3,75x</option>
+                <option value="4">4,00x</option><option value="4.25">4,25x</option><option value="4.5">4,50x</option>
+                <option value="4.75">4,75x</option><option value="5">5,00x</option>
+              </select></label>
+              <button class="audio-link-button" id="toggleAudioLinkButton" type="button" hidden aria-pressed="true"><span aria-hidden="true">⛓</span><span>Áudio vinculado</span></button>
+              <label data-fade-control>Fade in<input id="mediaFadeIn" type="range" min="0" max="5" step="0.1" value="0" /><output id="mediaFadeInValue">0,0 s</output></label>
+              <label data-fade-control>Fade out<input id="mediaFadeOut" type="range" min="0" max="5" step="0.1" value="0" /><output id="mediaFadeOutValue">0,0 s</output></label>
+              <button class="cut-selected-audio-button" id="cutSelectedAudioButton" type="button" hidden><span aria-hidden="true">[ ]</span><span id="cutSelectedAudioLabel">Remover trecho de áudio</span></button>
+              <button class="split-selected-audio-button" id="splitSelectedAudioButton" type="button" hidden><span aria-hidden="true">[|]</span>Dividir áudio</button>
+              <button class="extract-audio-button" id="extractAudioButton" type="button" data-video-control><span aria-hidden="true">♫</span>Extrair áudio</button>
+              <button class="duplicate-media-button" id="duplicateMediaClipButton" type="button"><span aria-hidden="true">＋</span>Duplicar</button>
+              <button id="deleteMediaClipButton" type="button" title="Excluir mídia"><span aria-hidden="true">×</span>Excluir</button>
+            </div>
+          </div>
+
+          <div class="tool-panel review-tools" data-tool-panel="review" hidden>
+            <div class="cue-inspector-empty" id="cueInspectorEmpty">Nenhuma legenda selecionada</div>
+            <div class="cue-inspector" id="cueInspector" hidden>
+              <label class="cue-inspector-text">Texto<textarea id="activeCueText" spellcheck="true"></textarea></label>
+              <label>Início<input id="activeCueStart" type="number" min="0" step="0.1" /></label>
+              <label>Fim<input id="activeCueEnd" type="number" min="0" step="0.1" /></label>
+              <button id="deleteActiveCueButton" type="button"><span aria-hidden="true">×</span>Excluir</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <aside class="panel timeline-panel" id="reviewEditor" aria-labelledby="timelineTitle">
+        <div class="panel-heading timeline-heading">
+          <div>
+            <span class="step-label">PROJETO</span>
+            <h2 id="timelineTitle">Timeline</h2>
+          </div>
+          <button class="icon-button small" id="addCueButton" type="button" title="Adicionar trecho" disabled>
+            <span aria-hidden="true">＋</span>
+          </button>
+        </div>
+
+        <div class="timeline-empty" id="timelineEmpty">
+          <span aria-hidden="true">≡</span>
+          <p>Os trechos sincronizados aparecerão aqui.</p>
+        </div>
+
+        <div class="cue-list" id="cueList" aria-live="polite"></div>
+
+        <div class="timing-tools" id="timingTools" hidden>
+          <label class="toggle-control linked-timing">
+            <input id="linkTiming" type="checkbox" checked />
+            <span aria-hidden="true"></span>
+            Encadear
+          </label>
+          <span class="timing-label">Ajustar todos</span>
+          <button type="button" data-shift="-0.2">− 0,2s</button>
+          <button type="button" data-shift="0.2">＋ 0,2s</button>
+        </div>
+      </aside>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <div class="export-modal" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportTitle" hidden>
+      <div class="export-dialog">
+        <span class="render-symbol" aria-hidden="true">●</span>
+        <h2 id="exportTitle">Renderizando vídeo</h2>
+        <p id="exportStatus">Preparando quadros e áudio...</p>
+        <div class="render-progress" aria-hidden="true">
+          <span id="exportProgress"></span>
+        </div>
+        <strong id="exportPercent">0%</strong>
+        <button class="button button-primary save-export" id="saveExportButton" type="button" hidden>Salvar vídeo</button>
+        <button class="button button-secondary cancel-export" id="cancelExportButton" type="button">Cancelar</button>
+      </div>
+    </div>
+
+    <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
+    <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
+
+    <script src="app.js?v=75"></script>
+  </body>
+</html>
