@@ -84,6 +84,11 @@ const elements = {
   exportFormat: document.querySelector("#exportFormat"),
   exportFrameRate: document.querySelector("#exportFrameRate"),
   exportColorMode: document.querySelector("#exportColorMode"),
+  projectAspectButton: document.querySelector("#projectAspectButton"),
+  projectAspectLabel: document.querySelector("#projectAspectLabel"),
+  projectAspectShape: document.querySelector("#projectAspectShape"),
+  projectAspectMenu: document.querySelector("#projectAspectMenu"),
+  projectAspectButtons: document.querySelectorAll("[data-project-aspect]"),
   exportButton: document.querySelector("#exportButton"),
   projectStatus: document.querySelector("#projectStatus"),
   toast: document.querySelector("#toast"),
@@ -134,6 +139,7 @@ const elements = {
   audioTrackInput: document.querySelector("#audioTrackInput"),
   mediaTimeline: document.querySelector("#mediaTimeline"),
   videoGridButtons: document.querySelectorAll("[data-video-grid]"),
+  videoGridPresets: document.querySelector("#videoGridPresets"),
   sequenceTrackLane: document.querySelector("#sequenceTrackLane"),
   audioTrackLane: document.querySelector("#audioTrackLane"),
   mediaPlayheads: document.querySelectorAll("[data-media-playhead]"),
@@ -271,8 +277,17 @@ const state = {
   projectEndSignaled: false,
   videoGridMode: 1,
   videoGridClipIds: [],
+  videoGridLayout: "auto",
+  projectAspect: "source",
   gridCellCanvas: null,
 };
+
+const PROJECT_ASPECTS = Object.freeze({
+  "9:16": 9 / 16,
+  "16:9": 16 / 9,
+  "1:1": 1,
+  "4:5": 4 / 5,
+});
 
 let autoCaptionTranscriberPromise = null;
 const TRANSFORMERS_MODULE_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js";
@@ -543,6 +558,12 @@ function composeEditorLayout() {
   mobileProjectDrawer.innerHTML = `
     <strong>Adicionar mídia</strong>
     <div class="mobile-add-grid"></div>
+    <div class="mobile-aspect-picker" aria-label="Proporção do projeto">
+      <span>Proporção</span>
+      ${[["source", "Original"], ["9:16", "9:16"], ["16:9", "16:9"], ["1:1", "1:1"], ["4:5", "4:5"]]
+        .map(([value, label]) => `<button type="button" data-project-aspect="${value}"><i class="ratio-shape ${value === "source" ? "ratio-source" : `ratio-${value.replace(":", "-")}`}"></i>${label}</button>`)
+        .join("")}
+    </div>
     <label>Resolução<select></select></label>
     <label>Frame rate<select></select></label>
     <label>Faixa dinâmica<select></select></label>`;
@@ -562,6 +583,9 @@ function composeEditorLayout() {
       source.value = drawerSelects[index].value;
       source.dispatchEvent(new Event("change"));
     });
+  });
+  mobileProjectDrawer.querySelectorAll("[data-project-aspect]").forEach((button) => {
+    button.addEventListener("click", () => setProjectAspect(button.dataset.projectAspect));
   });
   document.body.append(mobileProjectDrawer);
 
@@ -803,8 +827,9 @@ function currentCaptionWordIndex(cue, time) {
   return Math.min(words.length - 1, Math.floor(progress * words.length));
 }
 
-function captionFormatForDimensions(width = elements.video.videoWidth, height = elements.video.videoHeight) {
-  return width && height && width >= height ? "horizontal" : "vertical";
+function captionFormatForDimensions(width, height) {
+  const aspect = width && height ? width / height : projectAspectRatio();
+  return aspect >= 1 ? "horizontal" : "vertical";
 }
 
 function scaledCaptionFontSize(renderedHeight, format = captionFormatForDimensions()) {
@@ -2411,6 +2436,7 @@ function loadVideo(file) {
   state.audioTrackOrder = ["audio-base"];
   state.videoGridMode = 1;
   state.videoGridClipIds = [];
+  state.videoGridLayout = "auto";
   updateVideoGridButtons();
   state.splitHistory = [];
   state.hiddenVideoTrackIds.clear();
@@ -2781,31 +2807,121 @@ function previewPrimaryVideoClip(time) {
   return state.sequenceClips.find((clip) => clipTrackIsVisible(clip) && time >= clip.start && time < clip.end) || null;
 }
 
-function videoGridSlots(count, aspect = 1) {
-  if (count === 2) {
-    return aspect >= 1
-      ? [{ x: 0, y: 0, width: 50, height: 100 }, { x: 50, y: 0, width: 50, height: 100 }]
-      : [{ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 50, width: 100, height: 50 }];
+function sourceProjectAspectRatio() {
+  const sourceWidth = state.sequenceClips[0]?.width || elements.video.videoWidth || 1080;
+  const sourceHeight = state.sequenceClips[0]?.height || elements.video.videoHeight || 1920;
+  return sourceWidth / Math.max(1, sourceHeight);
+}
+
+function projectAspectRatio() {
+  return PROJECT_ASPECTS[state.projectAspect] || sourceProjectAspectRatio();
+}
+
+function updateProjectAspectControls() {
+  const preset = PROJECT_ASPECTS[state.projectAspect] ? state.projectAspect : "source";
+  const label = preset === "source" ? "Original" : preset;
+  elements.projectAspectLabel.textContent = label;
+  elements.projectAspectShape.className = `ratio-shape ${preset === "source" ? "ratio-source" : `ratio-${preset.replace(":", "-")}`}`;
+  document.querySelectorAll("[data-project-aspect]").forEach((button) => {
+    const active = button.dataset.projectAspect === preset;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const aspect = projectAspectRatio();
+  elements.videoShell.style.setProperty("--video-aspect", `${aspect}`);
+  renderVideoGridPresets();
+  updateMediaPreview();
+  applyCaptionPositionStyles();
+}
+
+function setProjectAspect(preset) {
+  state.projectAspect = PROJECT_ASPECTS[preset] ? preset : "source";
+  elements.projectAspectMenu.hidden = true;
+  elements.projectAspectButton.setAttribute("aria-expanded", "false");
+  updateProjectAspectControls();
+  saveLocalProject();
+}
+
+function resolvedVideoGridLayout(count, aspect, layout = state.videoGridLayout) {
+  if (layout !== "auto") return layout;
+  if (count === 2) return aspect >= 1 ? "columns" : "rows";
+  if (count === 3) return aspect >= 1 ? "hero-left" : "hero-top";
+  return "quad";
+}
+
+function videoGridSlots(count, aspect = projectAspectRatio(), layout = state.videoGridLayout) {
+  const resolved = resolvedVideoGridLayout(count, aspect, layout);
+  if (resolved === "columns") {
+    return Array.from({ length: count }, (_, index) => ({
+      x: index * 100 / count, y: 0, width: 100 / count, height: 100,
+    }));
   }
-  if (count === 3) {
-    return aspect >= 1
-      ? [
-          { x: 0, y: 0, width: 66.667, height: 100 },
-          { x: 66.667, y: 0, width: 33.333, height: 50 },
-          { x: 66.667, y: 50, width: 33.333, height: 50 },
-        ]
-      : [
-          { x: 0, y: 0, width: 100, height: 62 },
-          { x: 0, y: 62, width: 50, height: 38 },
-          { x: 50, y: 62, width: 50, height: 38 },
-        ];
+  if (resolved === "rows") {
+    return Array.from({ length: count }, (_, index) => ({
+      x: 0, y: index * 100 / count, width: 100, height: 100 / count,
+    }));
+  }
+  if (count === 3 && resolved === "hero-left") {
+    return [
+      { x: 0, y: 0, width: 66.667, height: 100 },
+      { x: 66.667, y: 0, width: 33.333, height: 50 },
+      { x: 66.667, y: 50, width: 33.333, height: 50 },
+    ];
+  }
+  if (count === 3 && resolved === "hero-top") {
+    return [
+      { x: 0, y: 0, width: 100, height: 62 },
+      { x: 0, y: 62, width: 50, height: 38 },
+      { x: 50, y: 62, width: 50, height: 38 },
+    ];
   }
   return [
     { x: 0, y: 0, width: 50, height: 50 },
     { x: 50, y: 0, width: 50, height: 50 },
     { x: 0, y: 50, width: 50, height: 50 },
     { x: 50, y: 50, width: 50, height: 50 },
-  ];
+  ].slice(0, count);
+}
+
+function gridLayoutChoices(count) {
+  if (count === 2) return [["auto", "Automático"], ["columns", "Lado a lado"], ["rows", "Empilhado"]];
+  if (count === 3) return [["auto", "Automático"], ["hero-left", "Destaque lateral"], ["hero-top", "Destaque superior"], ["columns", "Colunas"]];
+  return [["auto", "Automático"], ["quad", "Mosaico"], ["columns", "Colunas"], ["rows", "Empilhado"]];
+}
+
+function renderVideoGridPresets() {
+  if (!elements.videoGridPresets) return;
+  elements.videoGridPresets.replaceChildren();
+  elements.videoGridPresets.hidden = state.videoGridMode < 2;
+  if (state.videoGridMode < 2) return;
+  gridLayoutChoices(state.videoGridMode).forEach(([layout, label]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "grid-preset-button";
+    button.classList.toggle("active", state.videoGridLayout === layout);
+    button.setAttribute("aria-pressed", String(state.videoGridLayout === layout));
+    button.title = label;
+    const diagram = document.createElement("span");
+    diagram.className = "grid-layout-diagram";
+    videoGridSlots(state.videoGridMode, projectAspectRatio(), layout).forEach((slot) => {
+      const cell = document.createElement("i");
+      cell.style.left = `${slot.x}%`;
+      cell.style.top = `${slot.y}%`;
+      cell.style.width = `${slot.width}%`;
+      cell.style.height = `${slot.height}%`;
+      diagram.append(cell);
+    });
+    const text = document.createElement("span");
+    text.textContent = label;
+    button.append(diagram, text);
+    button.addEventListener("click", () => {
+      state.videoGridLayout = layout;
+      renderVideoGridPresets();
+      updateMediaPreview();
+      saveLocalProject();
+    });
+    elements.videoGridPresets.append(button);
+  });
 }
 
 function activeGridVideoCandidates(time = projectCurrentTime()) {
@@ -2834,6 +2950,7 @@ function updateVideoGridButtons() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+  renderVideoGridPresets();
 }
 
 function setGridElementRect(element, slot) {
@@ -2858,6 +2975,7 @@ function applyVideoGrid(count) {
   if (next === 1) {
     state.videoGridMode = 1;
     state.videoGridClipIds = [];
+    state.videoGridLayout = "auto";
     updateVideoGridButtons();
     updateMediaPreview();
     saveLocalProject();
@@ -2871,6 +2989,7 @@ function applyVideoGrid(count) {
   }
   state.videoGridMode = next;
   state.videoGridClipIds = candidates.slice(0, next).map((item) => item.key);
+  state.videoGridLayout = "auto";
   updateVideoGridButtons();
   updateMediaPreview();
   saveLocalProject();
@@ -2902,7 +3021,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
   const grid = activeVideoGrid(time);
   const gridActive = Boolean(grid && grid.participants.length);
   const gridSlots = gridActive
-    ? videoGridSlots(state.videoGridMode, elements.videoShell.clientWidth / Math.max(1, elements.videoShell.clientHeight))
+    ? videoGridSlots(state.videoGridMode, projectAspectRatio())
     : [];
   const baseGridIndex = gridActive ? grid.participants.findIndex((item) => item.key === "base") : -1;
   const primaryVideo = state.exporting ? null : previewPrimaryVideoClip(time);
@@ -2972,13 +3091,18 @@ function updateMediaPreview(time = projectCurrentTime()) {
     if (clip.type === "video") {
       const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, clip.mediaElement.duration || Infinity);
       const drift = localTime - (clip.mediaElement.currentTime || 0);
-      const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > 0.65;
+      const hardSyncThreshold = gridVideo ? 0.18 : 0.45;
+      const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > hardSyncThreshold;
       if (hardSync && !clip.mediaElement.seeking && Math.abs(drift) > 0.04) {
         clip.mediaElement.currentTime = localTime;
       }
       clip.previewWasActive = true;
       const rate = clipPlaybackRate(clip);
-      clip.mediaElement.playbackRate = !hardSync ? clamp(rate + drift * 0.16, 0.25, 5) : rate;
+      const correction = !hardSync && Math.abs(drift) > 0.025 ? clamp(drift * 0.22, -0.04, 0.04) : 0;
+      const desiredRate = clamp(rate + correction, 0.25, 5);
+      if (Math.abs(clip.mediaElement.playbackRate - desiredRate) > 0.004) {
+        clip.mediaElement.playbackRate = desiredRate;
+      }
       const graphNode = state.audioTrackNodes.get(clip.id);
       const transition = trackTransitionAtTime(clip, time);
       const transitionGain = (transition?.type === "fade" ? transition.progress : 1) * clipFadeFactor(clip, time);
@@ -3011,7 +3135,7 @@ function drawSourceCover(context, source, x, y, width, height) {
   return true;
 }
 
-function drawVideoGridFrame(context, width, height, time, baseSource = elements.video) {
+function drawVideoGridFrame(context, width, height, time, baseSource = elements.video, sourceOverrides = null) {
   const grid = activeVideoGrid(time);
   if (!grid?.participants.length) return false;
   const slots = videoGridSlots(state.videoGridMode, width / height);
@@ -3022,7 +3146,7 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
     const y = Math.round(height * slot.y / 100);
     const cellWidth = Math.max(1, Math.round(width * slot.width / 100));
     const cellHeight = Math.max(1, Math.round(height * slot.height / 100));
-    let source = item.type === "base" ? baseSource : item.source;
+    let source = item.type === "base" ? baseSource : sourceOverrides?.get(item.key) || item.source;
     let opacity = item.type === "base"
       ? clipFadeFactor(item.clip, time)
       : mediaClipAnimation(item.clip, time).opacity;
@@ -3054,11 +3178,13 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
   return true;
 }
 
-function drawImageOverlays(context, width, height, time) {
+function drawImageOverlays(context, width, height, time, sourceOverrides = null) {
   const gridActive = Boolean(activeVideoGrid(time)?.participants.length);
   orderedVisualClips().forEach((clip) => {
     if (gridActive && clip.type === "video") return;
-    const source = clip.type === "video" ? clip.mediaElement : clip.image;
+    const source = clip.type === "video"
+      ? sourceOverrides?.get(clip.id) || clip.mediaElement
+      : clip.image;
     const sourceWidth = source?.videoWidth || source?.naturalWidth;
     const sourceHeight = source?.videoHeight || source?.naturalHeight;
     if (!clipIsActiveAtTime(clip, time) || !sourceWidth || !sourceHeight) return;
@@ -4799,6 +4925,7 @@ function deleteSelectedMediaClip() {
   if (state.videoGridMode > 1 && state.videoGridClipIds.length < state.videoGridMode) {
     state.videoGridMode = 1;
     state.videoGridClipIds = [];
+    state.videoGridLayout = "auto";
     updateVideoGridButtons();
   }
   cleanupEmptyVideoTracks();
@@ -4880,7 +5007,22 @@ async function togglePlayback() {
     if (projectCurrentTime() >= projectDuration() - 0.05) {
       seekProjectTime(0, true).catch(() => {});
     } else {
-      elements.video.play().catch(() => {});
+      const time = projectCurrentTime();
+      const grid = activeVideoGrid(time);
+      const gridIds = grid?.keys || new Set();
+      const companions = state.overlayVideoClips.filter((clip) => gridIds.has(clip.id) && clipIsActiveAtTime(clip, time));
+      companions.forEach((clip) => {
+        const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, clip.mediaElement.duration || Infinity);
+        if (!clip.mediaElement.seeking && Math.abs((clip.mediaElement.currentTime || 0) - localTime) > 0.035) {
+          clip.mediaElement.currentTime = localTime;
+        }
+        clip.previewWasActive = true;
+        clip.previewShouldPlay = true;
+      });
+      await Promise.allSettled([
+        elements.video.play(),
+        ...companions.map((clip) => clip.mediaElement.play()),
+      ]);
     }
   }
   else elements.video.pause();
@@ -5715,9 +5857,7 @@ function even(value) {
 }
 
 function outputDimensions(preset) {
-  const sourceWidth = state.sequenceClips[0]?.width || elements.video.videoWidth || 1080;
-  const sourceHeight = state.sequenceClips[0]?.height || elements.video.videoHeight || 1920;
-  const aspect = sourceWidth / sourceHeight;
+  const aspect = projectAspectRatio();
   const sizes = {
     "video-720": { short: 720, long: 1280 },
     "video-1080": { short: 1080, long: 1920 },
@@ -6164,25 +6304,50 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
     });
   }
 
-  for (const clip of state.audioClips) {
-    if (!clipTrackIsVisible(clip)) continue;
-    const buffer = await offline.decodeAudioData(await clip.file.arrayBuffer());
-    const availableEnd = Math.min(clipEffectiveEnd(clip), clip.start + Math.max(0, buffer.duration - (clip.sourceOffset || 0)));
+  const mixTimelineClip = async (clip) => {
+    if (!clipTrackIsVisible(clip)) return;
+    let buffer;
+    try {
+      buffer = await offline.decodeAudioData(await clip.file.arrayBuffer());
+    } catch {
+      return;
+    }
+    const rate = clipPlaybackRate(clip);
+    const availableTimelineDuration = Math.max(0, buffer.duration - (clip.sourceOffset || 0)) / rate;
+    const availableEnd = Math.min(clipEffectiveEnd(clip), clip.start + availableTimelineDuration);
     keptSourceSegments(sourceDuration).forEach((kept) => {
       const sourceStart = Math.max(clip.start, kept.start);
       const sourceEnd = Math.min(availableEnd, kept.end);
       if (sourceEnd - sourceStart <= 0.000001) return;
       const outputStart = clamp(editedTime(sourceStart), 0, editedDuration);
-      const duration = Math.min(sourceEnd - sourceStart, editedDuration - outputStart);
-      if (duration <= 0) return;
+      const timelineDuration = Math.min(sourceEnd - sourceStart, editedDuration - outputStart);
+      if (timelineDuration <= 0) return;
+      const mediaOffset = (clip.sourceOffset || 0) + (sourceStart - clip.start) * rate;
+      const mediaDuration = Math.min(timelineDuration * rate, buffer.duration - mediaOffset);
+      if (mediaDuration <= 0) return;
       const source = offline.createBufferSource();
       const gain = offline.createGain();
       source.buffer = buffer;
-      scheduleClipGainAutomation(gain.gain, clip, sourceStart, sourceStart + duration, outputStart, clipOutputVolume(clip));
+      source.playbackRate.value = rate;
+      scheduleClipGainAutomation(
+        gain.gain,
+        clip,
+        sourceStart,
+        sourceStart + mediaDuration / rate,
+        outputStart,
+        clipOutputVolume(clip),
+      );
       source.connect(gain);
       gain.connect(offline.destination);
-      source.start(outputStart, (clip.sourceOffset || 0) + sourceStart - clip.start, duration);
+      source.start(outputStart, mediaOffset, mediaDuration);
     });
+  };
+
+  for (const clip of state.overlayVideoClips) {
+    await mixTimelineClip(clip);
+  }
+  for (const clip of state.audioClips) {
+    await mixTimelineClip(clip);
   }
   return offline.startRendering();
 }
@@ -6236,6 +6401,129 @@ function prepareExportCanvas(width, height, colorMode = selectedExportColorMode(
   const actualColorSpace = context?.getContextAttributes?.().colorSpace;
   state.hdrCanvasSupported = colorMode !== "hdr" || actualColorSpace === "display-p3";
   return { canvas, context };
+}
+
+function createHlgFrameProcessor(width, height, sourceIsDisplayP3 = false) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const gl = canvas.getContext("webgl2", {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    preserveDrawingBuffer: true,
+  });
+  if (!gl) return null;
+
+  const compileShader = (type, source) => {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const message = gl.getShaderInfoLog(shader);
+      gl.deleteShader(shader);
+      throw new Error(message || "Falha ao preparar o conversor HDR.");
+    }
+    return shader;
+  };
+
+  try {
+    const vertex = compileShader(gl.VERTEX_SHADER, `#version 300 es
+      in vec2 a_position;
+      out vec2 v_uv;
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+        v_uv = a_position * 0.5 + 0.5;
+      }`);
+    const fragment = compileShader(gl.FRAGMENT_SHADER, `#version 300 es
+      precision highp float;
+      uniform sampler2D u_frame;
+      uniform bool u_source_p3;
+      in vec2 v_uv;
+      out vec4 out_color;
+
+      vec3 to_linear(vec3 value) {
+        bvec3 low = lessThanEqual(value, vec3(0.04045));
+        vec3 linear_low = value / 12.92;
+        vec3 linear_high = pow((value + 0.055) / 1.055, vec3(2.4));
+        return mix(linear_high, linear_low, vec3(low));
+      }
+
+      float hlg(float value) {
+        const float a = 0.17883277;
+        const float b = 0.28466892;
+        const float c = 0.55991073;
+        value = max(0.0, value);
+        return value <= (1.0 / 12.0)
+          ? sqrt(3.0 * value)
+          : a * log(12.0 * value - b) + c;
+      }
+
+      void main() {
+        vec3 linear_rgb = to_linear(texture(u_frame, v_uv).rgb);
+        vec3 bt2020;
+        if (u_source_p3) {
+          bt2020.r = 0.753833 * linear_rgb.r + 0.198597 * linear_rgb.g + 0.047570 * linear_rgb.b;
+          bt2020.g = 0.045744 * linear_rgb.r + 0.941777 * linear_rgb.g + 0.012479 * linear_rgb.b;
+          bt2020.b = -0.001210 * linear_rgb.r + 0.017602 * linear_rgb.g + 0.983608 * linear_rgb.b;
+        } else {
+          bt2020.r = 0.627404 * linear_rgb.r + 0.329283 * linear_rgb.g + 0.043313 * linear_rgb.b;
+          bt2020.g = 0.069097 * linear_rgb.r + 0.919540 * linear_rgb.g + 0.011362 * linear_rgb.b;
+          bt2020.b = 0.016391 * linear_rgb.r + 0.088013 * linear_rgb.g + 0.895595 * linear_rgb.b;
+        }
+        out_color = vec4(hlg(bt2020.r), hlg(bt2020.g), hlg(bt2020.b), 1.0);
+      }`);
+    const program = gl.createProgram();
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(program) || "Falha ao iniciar o conversor HDR.");
+    }
+
+    const position = gl.getAttribLocation(program, "a_position");
+    const sourceP3 = gl.getUniformLocation(program, "u_source_p3");
+    const buffer = gl.createBuffer();
+    const texture = gl.createTexture();
+    const pixels = new Uint8Array(width * height * 4);
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.uniform1i(sourceP3, sourceIsDisplayP3 ? 1 : 0);
+    gl.viewport(0, 0, width, height);
+
+    return {
+      pixelsFrom(source) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        return pixels;
+      },
+      dispose() {
+        gl.deleteTexture(texture);
+        gl.deleteBuffer(buffer);
+        gl.deleteProgram(program);
+        canvas.width = 1;
+        canvas.height = 1;
+      },
+    };
+  } catch (error) {
+    console.warn("Conversor HDR HLG indisponível", error);
+    canvas.width = 1;
+    canvas.height = 1;
+    return null;
+  }
 }
 
 async function optimizedVideoEncoding(mediabunny, width, height, bitrate, frameRate) {
@@ -6375,11 +6663,15 @@ function setExportProgress(progress, width, height, frameRate, currentTime, dura
 }
 
 async function renderCaptionedVideoOptimized(preset) {
+  const gridClipIds = new Set(state.videoGridClipIds);
+  const unsupportedOverlayVideo = state.overlayVideoClips.some((clip) => (
+    clipTrackIsVisible(clip)
+    && (state.videoGridMode < 2 || !gridClipIds.has(clip.id))
+  ));
   if (
     !state.videoFile
-    || state.videoGridMode > 1
     || state.sequenceClips.length > 1
-    || state.overlayVideoClips.some(clipTrackIsVisible)
+    || unsupportedOverlayVideo
     || [...state.sequenceClips, ...state.overlayVideoClips, ...state.audioClips]
       .some((clip) => Math.abs(clipPlaybackRate(clip) - 1) > 0.001)
     || state.cuts.some((cut) => cut.ripple === false)
@@ -6418,7 +6710,8 @@ async function renderCaptionedVideoOptimized(preset) {
   let audioSettings = null;
   let audioDecoderConfig = null;
   const baseClip = state.sequenceClips[0];
-  const needsAudioMix = state.audioClips.some(clipTrackIsVisible);
+  const needsAudioMix = state.audioClips.some(clipTrackIsVisible)
+    || state.overlayVideoClips.some(clipTrackIsVisible);
   const baseOutputVolume = clipOutputVolume(baseClip);
   const needsBaseAudioProcessing = Math.abs(baseOutputVolume - 1) > 0.001 || clipHasFadeAutomation(baseClip);
   if (needsAudioMix) {
@@ -6476,6 +6769,14 @@ async function renderCaptionedVideoOptimized(preset) {
     showToast("O vídeo inteiro está dentro dos cortes.");
     return true;
   }
+  const hlgFrameProcessor = videoEncoding.hdr
+    ? createHlgFrameProcessor(width, height, state.hdrCanvasSupported)
+    : null;
+  if (videoEncoding.hdr && !hlgFrameProcessor) {
+    input.dispose();
+    showToast("HDR HLG não está disponível neste Safari; usando o exportador SDR compatível.");
+    return false;
+  }
 
   state.exportCanceled = false;
   state.exporting = true;
@@ -6486,7 +6787,7 @@ async function renderCaptionedVideoOptimized(preset) {
   elements.exportTitle.textContent = "Renderizando vídeo";
   elements.saveExportButton.hidden = true;
   elements.cancelExportButton.textContent = "Cancelar";
-  const exportColorDetail = videoEncoding.hdr && state.hdrCanvasSupported ? "HDR P3 / HEVC" : "SDR / AVC";
+  const exportColorDetail = videoEncoding.hdr ? "HDR HLG / HEVC Main10" : "SDR / AVC";
   if (selectedExportColorMode() === "hdr" && !videoEncoding.hdr) {
     showToast("HDR Main 10 não está disponível neste navegador; exportando em SDR sem perder quadros.");
   }
@@ -6496,6 +6797,7 @@ async function renderCaptionedVideoOptimized(preset) {
 
   let output = null;
   let shouldFallback = false;
+  const auxiliaryInputs = [];
   try {
     if (navigator.wakeLock?.request) {
       try {
@@ -6513,11 +6815,17 @@ async function renderCaptionedVideoOptimized(preset) {
     });
     state.optimizedOutput = output;
 
-    const videoSource = new mediabunny.CanvasSource(canvas, {
+    const videoSource = hlgFrameProcessor
+      ? new mediabunny.VideoSampleSource({
+        codec: videoEncoding.codec,
+        ...videoEncoding.options,
+        keyFrameInterval: 2,
+      })
+      : new mediabunny.CanvasSource(canvas, {
       codec: videoEncoding.codec,
       ...videoEncoding.options,
       keyFrameInterval: 2,
-    });
+      });
     output.addVideoTrack(videoSource, { frameRate });
 
     let audioSource = null;
@@ -6548,6 +6856,42 @@ async function renderCaptionedVideoOptimized(preset) {
       poolSize: 1,
     });
 
+    const gridDecoders = [];
+    if (state.videoGridMode > 1) {
+      for (const clip of state.overlayVideoClips.filter((item) => gridClipIds.has(item.id) && clipTrackIsVisible(item))) {
+        const auxiliaryInput = new mediabunny.Input({
+          formats: mediabunny.ALL_FORMATS,
+          source: new mediabunny.BlobSource(clip.file, {
+            useStreamReader: true,
+            maxCacheSize: isIOSDevice() ? 2 * 1024 * 1024 : 4 * 1024 * 1024,
+          }),
+        });
+        auxiliaryInputs.push(auxiliaryInput);
+        const auxiliaryTrack = await auxiliaryInput.getPrimaryVideoTrack();
+        if (!auxiliaryTrack || !(await auxiliaryTrack.canDecode())) {
+          throw new Error(`Não foi possível decodificar ${clip.name || "um vídeo da grade"}.`);
+        }
+        const auxiliaryFirstTimestamp = await auxiliaryTrack.getFirstTimestamp();
+        const auxiliaryDuration = await auxiliaryInput.computeDuration();
+        const timestamps = Array.from({ length: frameCount }, (_, index) => {
+          const timelineTime = sourceTimeAtEditedTime(index / frameRate, sourceDuration);
+          const mediaTime = clipMediaTimeAtTimeline(clip, timelineTime);
+          return auxiliaryFirstTimestamp + clamp(mediaTime, 0, Math.max(0, auxiliaryDuration - 0.000001));
+        });
+        const sink = new mediabunny.CanvasSink(auxiliaryTrack, {
+          width,
+          height,
+          fit: "contain",
+          poolSize: 1,
+        });
+        gridDecoders.push({
+          clip,
+          iterator: sink.canvasesAtTimestamps(timestamps)[Symbol.asyncIterator](),
+          lastFrame: null,
+        });
+      }
+    }
+
     const encodeVideo = async () => {
       let frameIndex = 0;
       let lastFrame = null;
@@ -6559,17 +6903,45 @@ async function renderCaptionedVideoOptimized(preset) {
         const outputTime = frameIndex / frameRate;
         const sourceTime = sourceTimeAtEditedTime(outputTime, sourceDuration);
         const frameDuration = 1 / frameRate;
+        const decodedGridSources = new Map();
+        for (const decoder of gridDecoders) {
+          const decoded = await decoder.iterator.next();
+          if (!decoded.done && decoded.value) decoder.lastFrame = decoded.value.canvas;
+          if (decoder.lastFrame) decodedGridSources.set(decoder.clip.id, decoder.lastFrame);
+        }
         context.fillStyle = "#000000";
         context.fillRect(0, 0, width, height);
-        if (trackIsVisible("video", "base")) {
+        const drewGrid = drawVideoGridFrame(context, width, height, sourceTime, lastFrame, decodedGridSources);
+        if (!drewGrid && trackIsVisible("video", "base")) {
           drawVideoFrame(context, width, height, lastFrame, transitionAtEditedTime(outputTime));
           drawBaseFadeOverlay(context, width, height, sourceTime);
         }
-        drawImageOverlays(context, width, height, sourceTime);
+        drawImageOverlays(context, width, height, sourceTime, decodedGridSources);
         drawCaptionFrame(context, width, height, sourceTime);
-        await videoSource.add(outputTime, frameDuration, {
-          keyFrame: frameIndex % Math.max(1, frameRate * 2) === 0,
-        });
+        const encodeOptions = { keyFrame: frameIndex % Math.max(1, frameRate * 2) === 0 };
+        if (hlgFrameProcessor) {
+          const hdrSample = new mediabunny.VideoSample(hlgFrameProcessor.pixelsFrom(canvas), {
+            format: "RGBA",
+            codedWidth: width,
+            codedHeight: height,
+            timestamp: outputTime,
+            duration: frameDuration,
+            colorSpace: {
+              primaries: "bt2020",
+              transfer: "hlg",
+              matrix: "bt2020-ncl",
+              fullRange: true,
+            },
+            _doNotCopy: true,
+          });
+          try {
+            await videoSource.add(hdrSample, encodeOptions);
+          } finally {
+            hdrSample.close();
+          }
+        } else {
+          await videoSource.add(outputTime, frameDuration, encodeOptions);
+        }
 
         frameIndex += 1;
         if (frameIndex === frameCount || frameIndex % Math.max(1, Math.round(frameRate / 4)) === 0) {
@@ -6686,6 +7058,8 @@ async function renderCaptionedVideoOptimized(preset) {
   } finally {
     state.exporting = false;
     state.optimizedOutput = null;
+    hlgFrameProcessor?.dispose();
+    auxiliaryInputs.forEach((auxiliaryInput) => auxiliaryInput.dispose());
     input.dispose();
     if (state.wakeLock) {
       await state.wakeLock.release().catch(() => {});
@@ -6992,6 +7366,8 @@ async function exportProject() {
         hiddenAudioTrackIds: [...state.hiddenAudioTrackIds],
         videoGridMode: state.videoGridMode,
         videoGridClipIds: state.videoGridClipIds,
+        videoGridLayout: state.videoGridLayout,
+        projectAspect: state.projectAspect,
         exportColorMode: selectedExportColorMode(),
         exportFrameRate: Number(elements.exportFrameRate.value),
         lut: state.lut
@@ -7043,6 +7419,8 @@ function saveLocalProject() {
     exportColorMode: selectedExportColorMode(),
     videoGridMode: state.videoGridMode,
     videoGridClipIds: state.videoGridClipIds,
+    videoGridLayout: state.videoGridLayout,
+    projectAspect: state.projectAspect,
     lutIntensity: elements.lutIntensity.value,
     lutPresetId: state.activeLutPresetId,
     cuts: state.cuts,
@@ -7092,7 +7470,12 @@ function restoreLocalProject() {
     elements.exportColorMode.value = data.exportColorMode === "hdr" ? "hdr" : "sdr";
     state.videoGridMode = [2, 3, 4].includes(Number(data.videoGridMode)) ? Number(data.videoGridMode) : 1;
     state.videoGridClipIds = Array.isArray(data.videoGridClipIds) ? data.videoGridClipIds.filter((id) => typeof id === "string") : [];
+    state.videoGridLayout = ["auto", "columns", "rows", "hero-left", "hero-top", "quad"].includes(data.videoGridLayout)
+      ? data.videoGridLayout
+      : "auto";
+    state.projectAspect = PROJECT_ASPECTS[data.projectAspect] ? data.projectAspect : "source";
     updateVideoGridButtons();
+    updateProjectAspectControls();
     elements.lutIntensity.value = data.lutIntensity || "100";
     elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
     state.activeLutPresetId = data.lutPresetId || null;
@@ -7201,9 +7584,7 @@ elements.video.addEventListener("loadedmetadata", () => {
       });
     }
   }
-  if (state.activeSequenceIndex === 0 && elements.video.videoWidth && elements.video.videoHeight) {
-    elements.videoShell.style.setProperty("--video-aspect", `${elements.video.videoWidth} / ${elements.video.videoHeight}`);
-  }
+  updateProjectAspectControls();
   setPlayerEnabled(true);
   elements.duration.textContent = formatClock(projectDuration());
   renderCues();
@@ -7544,6 +7925,19 @@ elements.overlayVideoInput.addEventListener("change", async (event) => {
 elements.videoGridButtons.forEach((button) => {
   button.addEventListener("click", () => applyVideoGrid(Number(button.dataset.videoGrid)));
 });
+elements.projectAspectButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  elements.projectAspectMenu.hidden = !elements.projectAspectMenu.hidden;
+  elements.projectAspectButton.setAttribute("aria-expanded", String(!elements.projectAspectMenu.hidden));
+});
+elements.projectAspectButtons.forEach((button) => {
+  button.addEventListener("click", () => setProjectAspect(button.dataset.projectAspect));
+});
+document.addEventListener("click", (event) => {
+  if (elements.projectAspectMenu.hidden || event.target.closest(".project-aspect-control")) return;
+  elements.projectAspectMenu.hidden = true;
+  elements.projectAspectButton.setAttribute("aria-expanded", "false");
+});
 elements.audioTrackInput.addEventListener("change", async (event) => {
   const trackId = state.pendingAudioTrackId || "audio-base";
   state.pendingAudioTrackId = null;
@@ -7719,7 +8113,7 @@ function updateExportPerformanceNotice() {
   const isIOS = isIOSDevice();
   const frameRate = Number(elements.exportFrameRate.value);
   if (elements.exportColorMode.value === "hdr") {
-    showToast("HDR usa Display‑P3 e HEVC quando disponíveis; outros codificadores exportam em SDR compatível.");
+    showToast("HDR usa HLG, BT.2020 e HEVC Main 10 quando disponíveis; outros codificadores exportam em SDR compatível.");
   } else if (isIOS && elements.exportFormat.value === "video-4k" && frameRate === 60) {
     showToast("4K a 60 FPS exige muito do iPhone. 1080p a 60 FPS é mais estável.");
   } else if (isIOS && frameRate === 60) {
@@ -7878,7 +8272,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=86", { updateViaCache: "none" })
+      .register("service-worker.js?v=87", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });

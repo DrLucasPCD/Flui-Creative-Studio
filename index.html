@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=86" />
+    <link rel="stylesheet" href="styles.css?v=87" />
   </head>
   <body>
     <header class="topbar">
@@ -51,6 +51,19 @@
           <option value="vtt">VTT</option>
           <option value="json">Projeto</option>
         </select>
+        <div class="project-aspect-control">
+          <button class="button button-secondary project-aspect-button" id="projectAspectButton" type="button" aria-haspopup="true" aria-expanded="false" title="Proporção do vídeo">
+            <span class="ratio-shape ratio-source" id="projectAspectShape" aria-hidden="true"></span>
+            <span id="projectAspectLabel">Original</span>
+          </button>
+          <div class="project-aspect-menu" id="projectAspectMenu" hidden aria-label="Proporção do vídeo">
+            <button class="active" type="button" data-project-aspect="source" aria-pressed="true"><span class="ratio-shape ratio-source" aria-hidden="true"></span><span>Original</span></button>
+            <button type="button" data-project-aspect="9:16" aria-pressed="false"><span class="ratio-shape ratio-9-16" aria-hidden="true"></span><span>9:16</span></button>
+            <button type="button" data-project-aspect="16:9" aria-pressed="false"><span class="ratio-shape ratio-16-9" aria-hidden="true"></span><span>16:9</span></button>
+            <button type="button" data-project-aspect="1:1" aria-pressed="false"><span class="ratio-shape ratio-1-1" aria-hidden="true"></span><span>1:1</span></button>
+            <button type="button" data-project-aspect="4:5" aria-pressed="false"><span class="ratio-shape ratio-4-5" aria-hidden="true"></span><span>4:5</span></button>
+          </div>
+        </div>
         <select id="exportFrameRate" class="select compact frame-rate-select" aria-label="Quadros por segundo da exportação">
           <option value="24">24 FPS</option>
           <option value="30" selected>30 FPS</option>
@@ -58,7 +71,7 @@
         </select>
         <select id="exportColorMode" class="select compact color-mode-select" aria-label="Faixa dinâmica da exportação">
           <option value="sdr" selected>SDR</option>
-          <option value="hdr">HDR</option>
+          <option value="hdr">HDR (HLG)</option>
         </select>
         <button class="button button-primary" id="exportButton" type="button" disabled>
           <span aria-hidden="true">↓</span>
@@ -450,6 +463,7 @@
                 <button type="button" data-video-grid="3" aria-pressed="false">3</button>
                 <button type="button" data-video-grid="4" aria-pressed="false">4</button>
               </div>
+              <div class="video-grid-presets" id="videoGridPresets" hidden aria-label="Formato da grade"></div>
             </section>
             <div class="media-timeline" id="mediaTimeline" aria-label="Trilhas do projeto">
               <div class="media-track-row base-video-track-row"><span>V1</span><div class="media-track-lane sequence-track-lane" id="sequenceTrackLane" data-video-track-id="base"><i class="media-playhead" data-media-playhead></i></div></div>
@@ -546,6 +560,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=86"></script>
+    <script src="app.js?v=87"></script>
   </body>
 </html>
