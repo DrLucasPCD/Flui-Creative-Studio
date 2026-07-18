@@ -1,9 +1,9 @@
-const CACHE_NAME = "voz-em-legenda-v76";
+const CACHE_NAME = "flui-creative-studio-v77";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/styles.css?v=76",
-  "/app.js?v=76",
+  "/styles.css?v=77",
+  "/app.js?v=77",
   "/vendor/mediabunny-1.48.1.min.mjs",
   "/manifest.webmanifest",
   "/icons/icon-192.png",

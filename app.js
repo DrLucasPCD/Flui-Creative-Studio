@@ -2739,6 +2739,13 @@ function visualTrackClips(trackId) {
     .filter((clip) => (clip.trackId || "base") === trackId);
 }
 
+function visualTrackContentEnd(trackId) {
+  const clips = trackId === "base"
+    ? [...state.sequenceClips, ...visualTrackClips("base")]
+    : visualTrackClips(trackId);
+  return clips.reduce((maximum, clip) => Math.max(maximum, mediaContentEnd(clip)), 0);
+}
+
 function cleanupEmptyVideoTracks() {
   const usedTracks = new Set([...state.overlayVideoClips, ...state.imageClips]
     .map((clip) => clip.trackId)
@@ -3874,14 +3881,15 @@ async function addSequenceVideos(files) {
   if (files.length) showToast(`${files.length} ${files.length === 1 ? "vídeo unido" : "vídeos unidos"}.`);
 }
 
-async function addOverlayVideos(files, requestedTrackId = null, requestedStart = projectCurrentTime()) {
+async function addOverlayVideos(files, requestedTrackId = null, requestedStart = null) {
   const trackId = ensureVideoTrack(requestedTrackId);
+  let cursor = Number.isFinite(requestedStart) ? Math.max(0, requestedStart) : visualTrackContentEnd(trackId);
   for (const file of files) {
     const url = URL.createObjectURL(file);
     try {
       const mediaElement = await loadVideoElement(url);
-      const start = clamp(requestedStart, 0, Math.max(0, projectDuration() - 0.1));
-      const end = Math.min(projectDuration() || start + mediaElement.duration, start + mediaElement.duration);
+      const start = cursor;
+      const end = start + mediaElement.duration;
       const clip = {
         id: crypto.randomUUID(), type: "video", name: file.name, file, url, mediaElement,
         trackId, start, end, x: 50, y: 50, size: fittedOverlaySize(mediaElement), opacity: 1, animation: "none", volume: 1,
@@ -3890,6 +3898,7 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
       };
       state.overlayVideoClips.push(clip);
       state.selectedMediaClipId = clip.id;
+      cursor = end;
     } catch (error) {
       URL.revokeObjectURL(url);
       showToast(error.message);
@@ -3899,26 +3908,26 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
   renderMediaTracks();
   saveLocalProject();
   if (files.length) showToast(`${files.length} ${files.length === 1 ? "vídeo adicionado" : "vídeos adicionados"} à faixa.`);
+  return cursor;
 }
 
-async function addImageClips(files, requestedTrackId = null, requestedStart = projectCurrentTime()) {
+async function addImageClips(files, requestedTrackId = null, requestedStart = null) {
   const trackId = ensureVideoTrack(requestedTrackId);
+  let cursor = Number.isFinite(requestedStart) ? Math.max(0, requestedStart) : visualTrackContentEnd(trackId);
   for (const file of files) {
     const url = URL.createObjectURL(file);
     try {
       const image = await loadImageElement(url);
-      const fallbackStart = requestedStart;
-      const videoDuration = projectDuration() || fallbackStart + 3;
-      const start = Number.isFinite(videoDuration)
-        ? Math.min(fallbackStart, Math.max(0, videoDuration - 0.1))
-        : fallbackStart;
+      const start = cursor;
+      const end = start + 3;
       const clip = {
         id: crypto.randomUUID(), type: "image", name: file.name, file, url, image,
-        trackId, start, end: Math.min(videoDuration, start + 3), x: 50, y: 50,
+        trackId, start, end, x: 50, y: 50,
         size: fittedOverlaySize(image), opacity: 1, animation: "fade", thumbnail: url,
       };
       state.imageClips.push(clip);
       state.selectedMediaClipId = clip.id;
+      cursor = end;
     } catch (error) {
       URL.revokeObjectURL(url);
       showToast(error.message);
@@ -3928,14 +3937,16 @@ async function addImageClips(files, requestedTrackId = null, requestedStart = pr
   renderMediaTracks();
   saveLocalProject();
   if (files.length) showToast(`${files.length} ${files.length === 1 ? "imagem adicionada" : "imagens adicionadas"} à faixa.`);
+  return cursor;
 }
 
-async function addVisualClips(files, trackId = null, start = projectCurrentTime()) {
+async function addVisualClips(files, trackId = null, start = null) {
   const resolvedTrackId = ensureVideoTrack(trackId);
   const videos = files.filter((file) => file.type.startsWith("video/") || /\.mov$/i.test(file.name));
   const images = files.filter((file) => file.type.startsWith("image/"));
-  if (videos.length) await addOverlayVideos(videos, resolvedTrackId, start);
-  if (images.length) await addImageClips(images, resolvedTrackId, start);
+  let cursor = Number.isFinite(start) ? start : visualTrackContentEnd(resolvedTrackId);
+  if (videos.length) cursor = await addOverlayVideos(videos, resolvedTrackId, cursor);
+  if (images.length) await addImageClips(images, resolvedTrackId, cursor);
 }
 
 function waitForAudioMetadata(audio) {
@@ -7034,7 +7045,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=76", { updateViaCache: "none" })
+      .register("service-worker.js?v=77", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
