@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=79" />
+    <link rel="stylesheet" href="styles.css?v=83" />
   </head>
   <body>
     <header class="topbar">
@@ -55,6 +55,10 @@
           <option value="24">24 FPS</option>
           <option value="30" selected>30 FPS</option>
           <option value="60">60 FPS</option>
+        </select>
+        <select id="exportColorMode" class="select compact color-mode-select" aria-label="Faixa dinâmica da exportação">
+          <option value="sdr" selected>SDR</option>
+          <option value="hdr">HDR</option>
         </select>
         <button class="button button-primary" id="exportButton" type="button" disabled>
           <span aria-hidden="true">↓</span>
@@ -435,6 +439,18 @@
               <input id="imageTrackInput" type="file" accept="image/*" multiple hidden />
               <input id="audioTrackInput" type="file" accept="audio/*,video/*,.mov" multiple hidden />
             </div>
+            <section class="video-grid-controls" aria-labelledby="videoGridTitle">
+              <div>
+                <strong id="videoGridTitle">Grade de vídeos</strong>
+                <small>Organize vídeos sobrepostos com um toque</small>
+              </div>
+              <div class="segmented video-grid-options" aria-label="Quantidade de vídeos na grade">
+                <button class="active" type="button" data-video-grid="1" aria-pressed="true">Livre</button>
+                <button type="button" data-video-grid="2" aria-pressed="false">2</button>
+                <button type="button" data-video-grid="3" aria-pressed="false">3</button>
+                <button type="button" data-video-grid="4" aria-pressed="false">4</button>
+              </div>
+            </section>
             <div class="media-timeline" id="mediaTimeline" aria-label="Trilhas do projeto">
               <div class="media-track-row base-video-track-row"><span>V1</span><div class="media-track-lane sequence-track-lane" id="sequenceTrackLane" data-video-track-id="base"><i class="media-playhead" data-media-playhead></i></div></div>
               <div class="media-track-row base-audio-track-row"><span>A1</span><div class="media-track-lane dynamic-audio-track-lane" id="audioTrackLane" data-audio-track-id="audio-base"><i class="media-playhead" data-media-playhead></i></div></div>
@@ -530,6 +546,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=79"></script>
+    <script src="app.js?v=83"></script>
   </body>
 </html>

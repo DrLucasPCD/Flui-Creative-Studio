@@ -83,6 +83,7 @@ const elements = {
   addCueButton: document.querySelector("#addCueButton"),
   exportFormat: document.querySelector("#exportFormat"),
   exportFrameRate: document.querySelector("#exportFrameRate"),
+  exportColorMode: document.querySelector("#exportColorMode"),
   exportButton: document.querySelector("#exportButton"),
   projectStatus: document.querySelector("#projectStatus"),
   toast: document.querySelector("#toast"),
@@ -132,6 +133,7 @@ const elements = {
   imageTrackInput: document.querySelector("#imageTrackInput"),
   audioTrackInput: document.querySelector("#audioTrackInput"),
   mediaTimeline: document.querySelector("#mediaTimeline"),
+  videoGridButtons: document.querySelectorAll("[data-video-grid]"),
   sequenceTrackLane: document.querySelector("#sequenceTrackLane"),
   audioTrackLane: document.querySelector("#audioTrackLane"),
   mediaPlayheads: document.querySelectorAll("[data-media-playhead]"),
@@ -244,6 +246,14 @@ const state = {
   audioClips: [],
   audioTrackOrder: ["audio-base"],
   pendingAudioTrackId: null,
+  narrationRecorder: null,
+  narrationStream: null,
+  narrationTrackId: null,
+  narrationStart: 0,
+  narrationChunks: [],
+  narrationCounter: 0,
+  narrationCaptionBusy: false,
+  narrationEndHandler: null,
   hiddenVideoTrackIds: new Set(),
   hiddenAudioTrackIds: new Set(),
   selectedMediaClipId: null,
@@ -259,6 +269,9 @@ const state = {
   splitHistory: [],
   isSequenceSwitching: false,
   projectEndSignaled: false,
+  videoGridMode: 1,
+  videoGridClipIds: [],
+  gridCellCanvas: null,
 };
 
 let autoCaptionTranscriberPromise = null;
@@ -439,6 +452,11 @@ function composeEditorLayout() {
     const addButton = trackLabel?.querySelector(".track-add-button");
     if (trackLabel) trackLabel.insertBefore(createTrackVisibilityButton(kind, trackId, label), addButton || null);
   });
+  appendAudioTrackActions(
+    elements.audioTrackLane.closest(".media-track-row")?.firstElementChild,
+    "audio-base",
+    "A1",
+  );
 
   const captionAddButton = document.createElement("button");
   captionAddButton.type = "button";
@@ -526,7 +544,8 @@ function composeEditorLayout() {
     <strong>Adicionar mídia</strong>
     <div class="mobile-add-grid"></div>
     <label>Resolução<select></select></label>
-    <label>Frame rate<select></select></label>`;
+    <label>Frame rate<select></select></label>
+    <label>Faixa dinâmica<select></select></label>`;
   [["＋ Vídeo", elements.sequenceVideoInput], ["▧ Foto", elements.imageTrackInput], ["♫ Áudio/vídeo", elements.audioTrackInput]]
     .forEach(([label, input]) => {
       const button = document.createElement("button");
@@ -536,7 +555,7 @@ function composeEditorLayout() {
       mobileProjectDrawer.querySelector(".mobile-add-grid").append(button);
     });
   const drawerSelects = mobileProjectDrawer.querySelectorAll("select");
-  [elements.exportFormat, elements.exportFrameRate].forEach((source, index) => {
+  [elements.exportFormat, elements.exportFrameRate, elements.exportColorMode].forEach((source, index) => {
     drawerSelects[index].innerHTML = source.innerHTML;
     drawerSelects[index].value = source.value;
     drawerSelects[index].addEventListener("change", () => {
@@ -1116,7 +1135,9 @@ async function getAutoCaptionTranscriber() {
           progress_callback: (progress) => {
             if (progress.status !== "progress" || !Number.isFinite(progress.progress)) return;
             const normalized = progress.progress <= 1 ? progress.progress * 100 : progress.progress;
-            setAutoCaptionProgress(`Baixando modelo ${Math.round(normalized)}%`);
+            const label = `Baixando modelo ${Math.round(normalized)}%`;
+            if (state.narrationCaptionBusy) setStatus(`Narração · ${label}`);
+            else setAutoCaptionProgress(label);
           },
         });
       })
@@ -1268,6 +1289,83 @@ async function generateAutomaticCaptions() {
     state.autoCaptionBusy = false;
     elements.autoCaptionLabel.textContent = "Gerar legenda automática";
     updateAutoCaptionAvailability();
+  }
+}
+
+function narrationClipForTrack(trackId) {
+  const selected = selectedMediaClip();
+  if (selected?.type === "audio" && selected.isNarration
+    && (selected.trackId || "audio-base") === trackId) return selected;
+  const current = projectCurrentTime();
+  const narrations = state.audioClips
+    .filter((clip) => clip.isNarration && (clip.trackId || "audio-base") === trackId)
+    .sort((first, second) => first.start - second.start);
+  return narrations.find((clip) => clipIsActiveAtTime(clip, current)) || narrations.at(-1) || null;
+}
+
+async function generateNarrationCaptions(trackId) {
+  if (state.narrationCaptionBusy || state.autoCaptionBusy || state.narrationRecorder) return;
+  const clip = narrationClipForTrack(trackId);
+  if (!clip?.file) {
+    showToast("Grave ou selecione uma narração nesta faixa.");
+    return;
+  }
+  const clipEnd = clipEffectiveEnd(clip);
+  const overlapping = state.cues.some((cue) => cue.start < clipEnd && cue.end > clip.start);
+  if (overlapping && !window.confirm("Substituir somente as legendas que coincidem com esta narração?")) return;
+
+  const originalCues = state.cues;
+  state.narrationCaptionBusy = true;
+  updateAudioTrackActionButtons();
+  setStatus("Preparando narração para transcrição...");
+  try {
+    const transcriber = await getAutoCaptionTranscriber();
+    setStatus("Transcrevendo narração...");
+    const audio = await decodeVideoAudio(clip.file);
+    const result = await transcriber(audio, {
+      language: "portuguese",
+      task: "transcribe",
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      return_timestamps: true,
+      temperature: 0,
+      do_sample: false,
+      no_repeat_ngram_size: 3,
+    });
+    const timingClip = {
+      ...clip,
+      duration: Math.max(0.1, clipEnd - clip.start),
+    };
+    const generated = timestampedTranscriptionCues(result, timingClip)
+      .map((cue) => ({
+        ...cue,
+        id: crypto.randomUUID(),
+        start: Math.max(clip.start, cue.start),
+        end: Math.min(clipEnd, Math.max(cue.start + 0.1, cue.end)),
+        narrationClipId: clip.id,
+      }))
+      .filter((cue) => cue.end > cue.start);
+    if (!generated.length) throw new Error("empty-transcription");
+    state.cues = [
+      ...state.cues.filter((cue) => cue.end <= clip.start || cue.start >= clipEnd),
+      ...generated,
+    ].sort((first, second) => first.start - second.start);
+    state.activeCue = Math.max(0, state.cues.findIndex((cue) => cue.narrationClipId === clip.id));
+    renderCues();
+    updateCaption();
+    saveLocalProject();
+    setStatus(`${generated.length} legendas sincronizadas com a narração`, true);
+    showToast("Legendas da narração prontas para revisão.");
+  } catch (error) {
+    state.cues = originalCues;
+    console.error("Falha ao legendar narração", error);
+    showToast(error?.message === "empty-transcription"
+      ? "Não foi possível identificar fala nesta narração."
+      : "Não foi possível transcrever a narração.");
+    setStatus("Transcrição da narração indisponível");
+  } finally {
+    state.narrationCaptionBusy = false;
+    updateAudioTrackActionButtons();
   }
 }
 
@@ -2292,6 +2390,7 @@ function stopPreviewMotion() {
 
 function loadVideo(file) {
   if (!file) return;
+  cancelNarrationRecording();
   const replacingExistingVideo = Boolean(state.videoFile);
   state.sequenceClips.forEach((clip) => URL.revokeObjectURL(clip.url));
   [...state.overlayVideoClips, ...state.imageClips, ...state.audioClips].forEach((clip) => {
@@ -2310,6 +2409,9 @@ function loadVideo(file) {
   state.imageClips = [];
   state.audioClips = [];
   state.audioTrackOrder = ["audio-base"];
+  state.videoGridMode = 1;
+  state.videoGridClipIds = [];
+  updateVideoGridButtons();
   state.splitHistory = [];
   state.hiddenVideoTrackIds.clear();
   state.hiddenAudioTrackIds.clear();
@@ -2679,15 +2781,135 @@ function previewPrimaryVideoClip(time) {
   return state.sequenceClips.find((clip) => clipTrackIsVisible(clip) && time >= clip.start && time < clip.end) || null;
 }
 
+function videoGridSlots(count, aspect = 1) {
+  if (count === 2) {
+    return aspect >= 1
+      ? [{ x: 0, y: 0, width: 50, height: 100 }, { x: 50, y: 0, width: 50, height: 100 }]
+      : [{ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 50, width: 100, height: 50 }];
+  }
+  if (count === 3) {
+    return aspect >= 1
+      ? [
+          { x: 0, y: 0, width: 66.667, height: 100 },
+          { x: 66.667, y: 0, width: 33.333, height: 50 },
+          { x: 66.667, y: 50, width: 33.333, height: 50 },
+        ]
+      : [
+          { x: 0, y: 0, width: 100, height: 62 },
+          { x: 0, y: 62, width: 50, height: 38 },
+          { x: 50, y: 62, width: 50, height: 38 },
+        ];
+  }
+  return [
+    { x: 0, y: 0, width: 50, height: 50 },
+    { x: 50, y: 0, width: 50, height: 50 },
+    { x: 0, y: 50, width: 50, height: 50 },
+    { x: 50, y: 50, width: 50, height: 50 },
+  ];
+}
+
+function activeGridVideoCandidates(time = projectCurrentTime()) {
+  const baseClip = state.sequenceClips.find((clip) => clipIsActiveAtTime(clip, time));
+  const overlays = orderedOverlayVideoClips().filter((clip) => clipIsActiveAtTime(clip, time));
+  const candidates = [
+    ...(baseClip ? [{ key: "base", clip: baseClip, type: "base", source: elements.video }] : []),
+    ...overlays.map((clip) => ({ key: clip.id, clip, type: "overlay", source: clip.mediaElement })),
+  ];
+  const selectedIndex = candidates.findIndex(({ clip }) => clip.id === state.selectedMediaClipId);
+  if (selectedIndex > 0) candidates.unshift(candidates.splice(selectedIndex, 1)[0]);
+  return candidates;
+}
+
+function activeVideoGrid(time = projectCurrentTime()) {
+  if (state.videoGridMode < 2) return null;
+  const candidates = activeGridVideoCandidates(time);
+  const byKey = new Map(candidates.map((item) => [item.key, item]));
+  const participants = state.videoGridClipIds.map((key) => byKey.get(key)).filter(Boolean);
+  return { participants, keys: new Set(participants.map((item) => item.key)) };
+}
+
+function updateVideoGridButtons() {
+  elements.videoGridButtons.forEach((button) => {
+    const active = Number(button.dataset.videoGrid) === state.videoGridMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function setGridElementRect(element, slot) {
+  element.style.inset = "auto";
+  element.style.left = `${slot.x}%`;
+  element.style.top = `${slot.y}%`;
+  element.style.width = `${slot.width}%`;
+  element.style.height = `${slot.height}%`;
+  element.style.transform = "none";
+  element.style.objectFit = "cover";
+}
+
+function resetGridElementRect(element, base = false) {
+  ["inset", "left", "top", "right", "bottom", "width", "height", "transform", "objectFit"].forEach((name) => {
+    element.style[name] = "";
+  });
+  if (!base) element.style.height = "auto";
+}
+
+function applyVideoGrid(count) {
+  const next = clamp(Math.round(Number(count) || 1), 1, 4);
+  if (next === 1) {
+    state.videoGridMode = 1;
+    state.videoGridClipIds = [];
+    updateVideoGridButtons();
+    updateMediaPreview();
+    saveLocalProject();
+    showToast("Layout livre restaurado.");
+    return;
+  }
+  const candidates = activeGridVideoCandidates();
+  if (candidates.length < next) {
+    showToast(`Sobreponha ${next} vídeos neste momento da timeline para criar a grade.`);
+    return;
+  }
+  state.videoGridMode = next;
+  state.videoGridClipIds = candidates.slice(0, next).map((item) => item.key);
+  updateVideoGridButtons();
+  updateMediaPreview();
+  saveLocalProject();
+  showToast(`Grade com ${next} vídeos aplicada.`);
+}
+
+function setClipPreviewPlayback(clip, mediaElement, shouldPlay) {
+  if (!mediaElement) return;
+  clip.previewShouldPlay = shouldPlay;
+  if (!shouldPlay) {
+    if (!mediaElement.paused) mediaElement.pause();
+    return;
+  }
+  if (!mediaElement.paused || clip.previewPlayPromise) return;
+  const playPromise = mediaElement.play();
+  clip.previewPlayPromise = playPromise;
+  Promise.resolve(playPromise)
+    .catch(() => {})
+    .finally(() => {
+      if (clip.previewPlayPromise === playPromise) clip.previewPlayPromise = null;
+      if (!clip.previewShouldPlay || elements.video.paused) mediaElement.pause();
+    });
+}
+
 function updateMediaPreview(time = projectCurrentTime()) {
   const duration = projectDuration();
   const baseGap = state.cuts.some((cut) => isBaseCut(cut) && cut.ripple === false && time >= cut.start && time < cut.end);
   const baseHidden = baseGap || !trackIsVisible("video", "base");
+  const grid = activeVideoGrid(time);
+  const gridActive = Boolean(grid && grid.participants.length);
+  const gridSlots = gridActive
+    ? videoGridSlots(state.videoGridMode, elements.videoShell.clientWidth / Math.max(1, elements.videoShell.clientHeight))
+    : [];
+  const baseGridIndex = gridActive ? grid.participants.findIndex((item) => item.key === "base") : -1;
   const primaryVideo = state.exporting ? null : previewPrimaryVideoClip(time);
   const focusBaseVideo = primaryVideo?.type === "sequence" && !baseHidden;
   elements.videoShell.classList.toggle("base-video-gap", baseHidden);
   const baseFade = clipFadeFactor(activeSequenceClip(), time);
-  const baseOpacity = baseHidden ? 0 : baseFade;
+  const baseOpacity = baseHidden || (gridActive && baseGridIndex < 0) ? 0 : baseFade;
   elements.video.style.opacity = String(baseOpacity);
   elements.lutPreviewCanvas.style.opacity = String(baseOpacity);
   const baseVolume = baseHidden ? 0 : clamp((activeSequenceClip()?.volume ?? 1) * baseFade, 0, 2);
@@ -2698,27 +2920,44 @@ function updateMediaPreview(time = projectCurrentTime()) {
     playhead.style.left = duration ? `${clamp(time / duration) * 100}%` : "0%";
   });
   renderMediaOverlayElements();
+  elements.videoShell.classList.toggle("video-grid-active", gridActive);
+  if (gridActive && baseGridIndex >= 0) {
+    setGridElementRect(elements.video, gridSlots[baseGridIndex]);
+    setGridElementRect(elements.lutPreviewCanvas, gridSlots[baseGridIndex]);
+  } else {
+    resetGridElementRect(elements.video, true);
+    resetGridElementRect(elements.lutPreviewCanvas, true);
+  }
   orderedVisualClips().forEach((clip) => {
     const active = clipIsActiveAtTime(clip, time);
     if (!clip.element) return;
+    const gridIndex = gridActive ? grid.participants.findIndex((item) => item.key === clip.id) : -1;
+    const gridVideo = clip.type === "video" && gridIndex >= 0;
     const fullSizeVideo = clip.type === "video" && (clip.size ?? 100) >= 95;
-    const previewActive = active && (!fullSizeVideo || clip.id === primaryVideo?.id);
+    const previewActive = gridActive && clip.type === "video"
+      ? active && gridVideo
+      : active && (!fullSizeVideo || clip.id === primaryVideo?.id);
     clip.element.hidden = !previewActive;
-    if (clip.resizeHandle) clip.resizeHandle.hidden = !previewActive || clip.id !== state.selectedMediaClipId;
+    if (clip.resizeHandle) clip.resizeHandle.hidden = gridActive || !previewActive || clip.id !== state.selectedMediaClipId;
     if (!active || (clip.type === "video" && !previewActive)) {
       if (clip.type === "video") {
         clip.previewWasActive = false;
         clip.mediaElement.playbackRate = 1;
-        if (!clip.mediaElement.paused) clip.mediaElement.pause();
+        setClipPreviewPlayback(clip, clip.mediaElement, false);
       }
       return;
     }
     const motion = mediaClipAnimation(clip, time);
-    clip.element.style.left = `${clip.x}%`;
-    clip.element.style.top = `${clip.y}%`;
-    clip.element.style.width = `${clip.size}%`;
+    if (gridVideo) {
+      setGridElementRect(clip.element, gridSlots[gridIndex]);
+    } else {
+      resetGridElementRect(clip.element);
+      clip.element.style.left = `${clip.x}%`;
+      clip.element.style.top = `${clip.y}%`;
+      clip.element.style.width = `${clip.size}%`;
+    }
     clip.element.style.opacity = String(motion.opacity);
-    clip.element.style.transform = `translate(-50%, -50%) translateX(${motion.offsetX}%) rotate(${clip.rotation || 0}deg) scale(${motion.scale})`;
+    if (!gridVideo) clip.element.style.transform = `translate(-50%, -50%) translateX(${motion.offsetX}%) rotate(${clip.rotation || 0}deg) scale(${motion.scale})`;
     clip.element.classList.toggle("selected", clip.id === state.selectedMediaClipId);
     if (clip.resizeHandle && !clip.resizeHandle.hidden) {
       const sourceWidth = clip.type === "video" ? clip.mediaElement.videoWidth : clip.image.naturalWidth;
@@ -2745,15 +2984,80 @@ function updateMediaPreview(time = projectCurrentTime()) {
       const transitionGain = (transition?.type === "fade" ? transition.progress : 1) * clipFadeFactor(clip, time);
       clip.mediaElement.volume = graphNode ? 1 : clamp((clip.volume ?? 1) * transitionGain, 0, 1);
       if (graphNode) graphNode.gain.gain.value = clamp((clip.volume ?? 1) * transitionGain, 0, 2);
-      if (!elements.video.paused && clip.mediaElement.paused) clip.mediaElement.play().catch(() => {});
-      if (elements.video.paused && !clip.mediaElement.paused) clip.mediaElement.pause();
+      setClipPreviewPlayback(clip, clip.mediaElement, !elements.video.paused);
     }
   });
   syncAudioClips(time);
 }
 
+function drawSourceCover(context, source, x, y, width, height) {
+  const sourceWidth = source?.videoWidth || source?.naturalWidth || source?.width;
+  const sourceHeight = source?.videoHeight || source?.naturalHeight || source?.height;
+  if (!sourceWidth || !sourceHeight || width <= 0 || height <= 0) return false;
+  const sourceAspect = sourceWidth / sourceHeight;
+  const targetAspect = width / height;
+  let sx = 0;
+  let sy = 0;
+  let sw = sourceWidth;
+  let sh = sourceHeight;
+  if (sourceAspect > targetAspect) {
+    sw = sourceHeight * targetAspect;
+    sx = (sourceWidth - sw) / 2;
+  } else {
+    sh = sourceWidth / targetAspect;
+    sy = (sourceHeight - sh) / 2;
+  }
+  context.drawImage(source, sx, sy, sw, sh, x, y, width, height);
+  return true;
+}
+
+function drawVideoGridFrame(context, width, height, time, baseSource = elements.video) {
+  const grid = activeVideoGrid(time);
+  if (!grid?.participants.length) return false;
+  const slots = videoGridSlots(state.videoGridMode, width / height);
+  grid.participants.forEach((item, index) => {
+    const slot = slots[index];
+    if (!slot) return;
+    const x = Math.round(width * slot.x / 100);
+    const y = Math.round(height * slot.y / 100);
+    const cellWidth = Math.max(1, Math.round(width * slot.width / 100));
+    const cellHeight = Math.max(1, Math.round(height * slot.height / 100));
+    let source = item.type === "base" ? baseSource : item.source;
+    let opacity = item.type === "base"
+      ? clipFadeFactor(item.clip, time)
+      : mediaClipAnimation(item.clip, time).opacity;
+
+    if (item.type === "base" && (state.lut || hasVideoAdjustments())) {
+      if (!state.gridCellCanvas) state.gridCellCanvas = document.createElement("canvas");
+      const cell = state.gridCellCanvas;
+      cell.width = cellWidth;
+      cell.height = cellHeight;
+      const cellContext = cell.getContext("2d", { alpha: false });
+      cellContext.fillStyle = "#000";
+      cellContext.fillRect(0, 0, cellWidth, cellHeight);
+      drawSourceCover(cellContext, source, 0, 0, cellWidth, cellHeight);
+      if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", cellWidth, cellHeight, cell)) {
+        source = elements.lutRenderCanvas;
+      } else {
+        source = cell;
+      }
+    }
+
+    context.save();
+    context.beginPath();
+    context.rect(x, y, cellWidth, cellHeight);
+    context.clip();
+    context.globalAlpha = opacity;
+    drawSourceCover(context, source, x, y, cellWidth, cellHeight);
+    context.restore();
+  });
+  return true;
+}
+
 function drawImageOverlays(context, width, height, time) {
+  const gridActive = Boolean(activeVideoGrid(time)?.participants.length);
   orderedVisualClips().forEach((clip) => {
+    if (gridActive && clip.type === "video") return;
     const source = clip.type === "video" ? clip.mediaElement : clip.image;
     const sourceWidth = source?.videoWidth || source?.naturalWidth;
     const sourceHeight = source?.videoHeight || source?.naturalHeight;
@@ -2780,7 +3084,7 @@ function syncAudioClips(time = projectCurrentTime()) {
     if (!active) {
       clip.previewWasActive = false;
       audio.playbackRate = 1;
-      if (!audio.paused) audio.pause();
+      setClipPreviewPlayback(clip, audio, false);
       return;
     }
     const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, audio.duration || Infinity);
@@ -2799,8 +3103,7 @@ function syncAudioClips(time = projectCurrentTime()) {
     } else {
       audio.volume = clamp((clip.volume ?? 1) * transitionGain, 0, 1);
     }
-    if (!elements.video.paused && audio.paused) audio.play().catch(() => {});
-    if (elements.video.paused && !audio.paused) audio.pause();
+    setClipPreviewPlayback(clip, audio, !elements.video.paused);
   });
 }
 
@@ -2813,6 +3116,51 @@ function createTrackAddButton(label, onClick) {
   button.setAttribute("aria-label", label);
   button.addEventListener("click", onClick);
   return button;
+}
+
+function createAudioTrackActionButton(action, trackId, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `track-audio-action-button track-${action}-button`;
+  button.dataset.audioAction = action;
+  button.dataset.audioTrackId = trackId;
+  if (action === "narrate") {
+    const recordingHere = Boolean(state.narrationRecorder && state.narrationTrackId === trackId);
+    button.textContent = recordingHere ? "■" : "●";
+    button.classList.toggle("recording", recordingHere);
+    button.title = recordingHere ? `Finalizar narração na faixa ${label}` : `Gravar narração na faixa ${label}`;
+    button.setAttribute("aria-pressed", String(recordingHere));
+    button.addEventListener("click", () => toggleNarrationRecording(trackId));
+  } else {
+    button.textContent = "CC";
+    button.title = `Gerar legendas da narração na faixa ${label}`;
+    button.disabled = state.narrationCaptionBusy;
+    button.addEventListener("click", () => generateNarrationCaptions(trackId));
+  }
+  button.setAttribute("aria-label", button.title);
+  return button;
+}
+
+function appendAudioTrackActions(trackLabel, trackId, label) {
+  if (!trackLabel || trackLabel.querySelector('[data-audio-action="narrate"]')) return;
+  trackLabel.append(
+    createAudioTrackActionButton("narrate", trackId, label),
+    createAudioTrackActionButton("captions", trackId, label),
+  );
+}
+
+function updateAudioTrackActionButtons() {
+  document.querySelectorAll('[data-audio-action="narrate"]').forEach((button) => {
+    const recordingHere = Boolean(state.narrationRecorder && state.narrationTrackId === button.dataset.audioTrackId);
+    button.textContent = recordingHere ? "■" : "●";
+    button.classList.toggle("recording", recordingHere);
+    button.setAttribute("aria-pressed", String(recordingHere));
+    button.title = recordingHere ? "Finalizar narração" : "Gravar narração";
+    button.setAttribute("aria-label", button.title);
+  });
+  document.querySelectorAll('[data-audio-action="captions"]').forEach((button) => {
+    button.disabled = state.narrationCaptionBusy || Boolean(state.narrationRecorder);
+  });
 }
 
 function trackIsVisible(kind, trackId) {
@@ -3048,6 +3396,8 @@ function renderAudioTrackStructure() {
         state.pendingAudioTrackId = trackId;
         elements.audioTrackInput.click();
       }),
+      createAudioTrackActionButton("narrate", trackId, `A${trackNumber}`),
+      createAudioTrackActionButton("captions", trackId, `A${trackNumber}`),
     );
     const lane = document.createElement("div");
     lane.className = "media-track-lane dynamic-audio-track-lane";
@@ -3075,6 +3425,7 @@ function renderAudioTrackStructure() {
     appendInsertZone(offset + 2);
   });
   baseRow?.after(fragment);
+  updateAudioTrackActionButtons();
 }
 
 function videoDropTargetAt(clientY) {
@@ -4109,10 +4460,11 @@ function waitForAudioMetadata(audio) {
   });
 }
 
-async function addAudioClips(files, requestedTrackId = "audio-base", requestedStart = projectCurrentTime()) {
+async function addAudioClips(files, requestedTrackId = "audio-base", requestedStart = projectCurrentTime(), options = {}) {
   const trackId = ensureAudioTrack(requestedTrackId);
   let addedCount = 0;
   let extractedCount = 0;
+  const addedClips = [];
   for (const file of files) {
     const extractingVideo = fileIsVideo(file);
     if (extractingVideo && !(await fileHasAudioTrack(file))) {
@@ -4123,6 +4475,7 @@ async function addAudioClips(files, requestedTrackId = "audio-base", requestedSt
     const audioElement = new Audio(url);
     audioElement.preload = "metadata";
     audioElement.playsInline = true;
+    audioElement.muted = elements.video.muted;
     try {
       await waitForAudioMetadata(audioElement);
       const fallbackStart = requestedStart;
@@ -4134,9 +4487,11 @@ async function addAudioClips(files, requestedTrackId = "audio-base", requestedSt
         id: crypto.randomUUID(), type: "audio", name: extractingVideo ? `Áudio · ${file.name}` : file.name, file, url, audioElement,
         trackId, start, end: Math.min(videoDuration, start + audioElement.duration), volume: 1, playbackRate: 1,
         importedFromVideo: extractingVideo,
+        isNarration: Boolean(options.isNarration),
       };
       clip.sourceSpan = clip.end - clip.start;
       state.audioClips.push(clip);
+      addedClips.push(clip);
       state.selectedMediaClipId = clip.id;
       addedCount += 1;
       if (extractingVideo) extractedCount += 1;
@@ -4148,12 +4503,177 @@ async function addAudioClips(files, requestedTrackId = "audio-base", requestedSt
   renderMediaTracks();
   updatePlayer();
   saveLocalProject();
-  if (addedCount) {
+  if (addedCount && !options.silentToast) {
     const detail = extractedCount
       ? `${extractedCount} ${extractedCount === 1 ? "vídeo convertido em áudio" : "vídeos convertidos em áudio"}`
       : `${addedCount} ${addedCount === 1 ? "áudio adicionado" : "áudios adicionados"}`;
     showToast(`${detail}.`);
   }
+  return addedClips;
+}
+
+function narrationRecorderForStream(stream) {
+  if (!window.MediaRecorder) throw new Error("recording-unsupported");
+  const types = [
+    "audio/mp4;codecs=mp4a.40.2",
+    "audio/mp4",
+    "audio/webm;codecs=opus",
+    "audio/webm",
+  ];
+  for (const mimeType of types) {
+    if (!MediaRecorder.isTypeSupported?.(mimeType)) continue;
+    try {
+      return new MediaRecorder(stream, { mimeType });
+    } catch {
+      // Try the next format supported by this browser.
+    }
+  }
+  return new MediaRecorder(stream);
+}
+
+function narrationFileExtension(mimeType) {
+  if (mimeType.includes("mp4")) return "m4a";
+  if (mimeType.includes("ogg")) return "ogg";
+  return "webm";
+}
+
+function releaseNarrationMicrophone() {
+  state.narrationStream?.getTracks().forEach((track) => track.stop());
+  state.narrationStream = null;
+  if (state.narrationEndHandler) {
+    elements.video.removeEventListener("projectended", state.narrationEndHandler);
+    state.narrationEndHandler = null;
+  }
+}
+
+function cancelNarrationRecording() {
+  const recorder = state.narrationRecorder;
+  state.narrationRecorder = null;
+  state.narrationTrackId = null;
+  state.narrationChunks = [];
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      recorder.stop();
+    } catch {
+      // The microphone tracks are released below even if stopping fails.
+    }
+  }
+  releaseNarrationMicrophone();
+  updateAudioTrackActionButtons();
+}
+
+async function finishNarrationRecording(recorder, trackId, start) {
+  if (state.narrationRecorder !== recorder) return;
+  const end = projectCurrentTime();
+  elements.video.pause();
+  const chunks = state.narrationChunks;
+  const mimeType = recorder.mimeType || chunks.find((chunk) => chunk.type)?.type || "audio/webm";
+  state.narrationRecorder = null;
+  state.narrationTrackId = null;
+  state.narrationChunks = [];
+  releaseNarrationMicrophone();
+  updateAudioTrackActionButtons();
+
+  const blob = new Blob(chunks, { type: mimeType });
+  if (!blob.size || end - start < 0.12) {
+    showToast("Narração muito curta. Grave novamente.");
+    return;
+  }
+  state.narrationCounter += 1;
+  const extension = narrationFileExtension(mimeType);
+  const file = new File([blob], `Narracao ${state.narrationCounter}.${extension}`, {
+    type: mimeType,
+    lastModified: Date.now(),
+  });
+  const [clip] = await addAudioClips([file], trackId, start, { isNarration: true, silentToast: true });
+  if (!clip) return;
+  clip.name = `Narração ${state.narrationCounter}`;
+  renderMediaTracks();
+  saveLocalProject();
+  showToast("Narração adicionada à faixa.");
+}
+
+async function startNarrationRecording(trackId) {
+  if (!elements.video.src || !state.sequenceClips.length) {
+    showToast("Abra um vídeo antes de gravar a narração.");
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showToast("Este navegador não oferece gravação pelo microfone.");
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    state.narrationStream = stream;
+    if (projectCurrentTime() >= projectDuration() - 0.05) await seekProjectTime(0, false);
+    const resolvedTrackId = ensureAudioTrack(trackId);
+    state.hiddenAudioTrackIds.delete(resolvedTrackId);
+    const recorder = narrationRecorderForStream(stream);
+    const start = projectCurrentTime();
+    state.narrationRecorder = recorder;
+    state.narrationTrackId = resolvedTrackId;
+    state.narrationStart = start;
+    state.narrationChunks = [];
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) state.narrationChunks.push(event.data);
+    });
+    recorder.addEventListener("stop", () => finishNarrationRecording(recorder, resolvedTrackId, start), { once: true });
+    recorder.addEventListener("error", () => {
+      elements.video.pause();
+      state.narrationRecorder = null;
+      state.narrationTrackId = null;
+      state.narrationChunks = [];
+      releaseNarrationMicrophone();
+      updateAudioTrackActionButtons();
+      showToast("A gravação da narração foi interrompida.");
+    }, { once: true });
+    state.narrationEndHandler = () => stopNarrationRecording();
+    elements.video.addEventListener("projectended", state.narrationEndHandler, { once: true });
+    recorder.start(250);
+    updateAudioTrackActionButtons();
+    await preparePreviewAudioMixer().catch(() => {});
+    await elements.video.play();
+    showToast("Gravando narração. Toque em ■ para finalizar.");
+  } catch (error) {
+    const recorder = state.narrationRecorder;
+    state.narrationRecorder = null;
+    state.narrationTrackId = null;
+    state.narrationChunks = [];
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        // Releasing the stream below also ends the recorder.
+      }
+    }
+    releaseNarrationMicrophone();
+    updateAudioTrackActionButtons();
+    const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
+    showToast(denied
+      ? "Permita o acesso ao microfone para gravar a narração."
+      : "Não foi possível iniciar o microfone.");
+  }
+}
+
+function stopNarrationRecording() {
+  const recorder = state.narrationRecorder;
+  if (!recorder || recorder.state === "inactive") return;
+  if (!elements.video.paused) elements.video.pause();
+  if (recorder.state !== "inactive") recorder.stop();
+}
+
+function toggleNarrationRecording(trackId) {
+  if (state.narrationRecorder) {
+    stopNarrationRecording();
+    return;
+  }
+  startNarrationRecording(trackId);
 }
 
 async function fileHasAudioTrack(file) {
@@ -4275,6 +4795,12 @@ function deleteSelectedMediaClip() {
   state.overlayVideoClips = state.overlayVideoClips.filter((item) => item.id !== clip.id);
   state.imageClips = state.imageClips.filter((item) => item.id !== clip.id);
   state.audioClips = state.audioClips.filter((item) => item.id !== clip.id);
+  state.videoGridClipIds = state.videoGridClipIds.filter((id) => id !== clip.id);
+  if (state.videoGridMode > 1 && state.videoGridClipIds.length < state.videoGridMode) {
+    state.videoGridMode = 1;
+    state.videoGridClipIds = [];
+    updateVideoGridButtons();
+  }
   cleanupEmptyVideoTracks();
   cleanupEmptyAudioTracks();
   state.activeCue = Math.min(state.activeCue, state.cues.length - 1);
@@ -4334,13 +4860,27 @@ function setPlayerEnabled(enabled) {
   updateScriptState();
 }
 
-function togglePlayback() {
+function previewNeedsAudioMixer() {
+  return state.audioClips.some(clipTrackIsVisible)
+    || state.overlayVideoClips.some(clipTrackIsVisible)
+    || !trackIsVisible("video", "base")
+    || [...state.sequenceClips, ...state.overlayVideoClips, ...state.audioClips]
+      .some((clip) => Math.abs((clip.volume ?? 1) - 1) > 0.001 || clipHasFadeAutomation(clip));
+}
+
+async function preparePreviewAudioMixer(force = false) {
+  if (!force && !previewNeedsAudioMixer()) return;
+  await audioTracksFromMixGraph();
+}
+
+async function togglePlayback() {
   if (!elements.video.src) return;
   if (elements.video.paused) {
+    await preparePreviewAudioMixer().catch((error) => console.warn("Mixer de áudio indisponível", error));
     if (projectCurrentTime() >= projectDuration() - 0.05) {
       seekProjectTime(0, true).catch(() => {});
     } else {
-      elements.video.play();
+      elements.video.play().catch(() => {});
     }
   }
   else elements.video.pause();
@@ -5457,7 +5997,11 @@ function drawCaptionFrame(context, width, height, time) {
 }
 
 function supportedRecordingType() {
+  const hdrTypes = selectedExportColorMode() === "hdr"
+    ? ["video/mp4;codecs=hvc1.2.4.L120.B0,mp4a.40.2", "video/mp4;codecs=hvc1", "video/mp4;codecs=hev1"]
+    : [];
   const types = [
+    ...hdrTypes,
     "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
     "video/mp4",
     "video/webm;codecs=vp9,opus",
@@ -5665,6 +6209,36 @@ function selectedExportFrameRate() {
   return [24, 30, 60].includes(value) ? value : 30;
 }
 
+function selectedExportColorMode() {
+  return elements.exportColorMode?.value === "hdr" ? "hdr" : "sdr";
+}
+
+function prepareExportCanvas(width, height) {
+  const colorMode = selectedExportColorMode();
+  let canvas = elements.renderCanvas;
+  if (canvas.dataset.colorMode && canvas.dataset.colorMode !== colorMode) {
+    const replacement = canvas.cloneNode(false);
+    canvas.replaceWith(replacement);
+    elements.renderCanvas = replacement;
+    canvas = replacement;
+  }
+  canvas.dataset.colorMode = colorMode;
+  let context;
+  try {
+    context = canvas.getContext("2d", {
+      alpha: false,
+      colorSpace: colorMode === "hdr" ? "display-p3" : "srgb",
+    });
+  } catch {
+    context = canvas.getContext("2d", { alpha: false });
+  }
+  canvas.width = width;
+  canvas.height = height;
+  const actualColorSpace = context?.getContextAttributes?.().colorSpace;
+  state.hdrCanvasSupported = colorMode !== "hdr" || actualColorSpace === "display-p3";
+  return { canvas, context };
+}
+
 function exportVideoBitrate(preset, frameRate) {
   const base = preset === "video-4k"
     ? (isIOSDevice() ? 18_000_000 : 28_000_000)
@@ -5672,7 +6246,8 @@ function exportVideoBitrate(preset, frameRate) {
       ? 12_000_000
       : 6_000_000;
   const frameRateFactor = frameRate === 60 ? 1.6 : frameRate === 24 ? 0.9 : 1;
-  return Math.round(base * frameRateFactor);
+  const colorFactor = selectedExportColorMode() === "hdr" ? 1.25 : 1;
+  return Math.round(base * frameRateFactor * colorFactor);
 }
 
 function mergedBaseRippleCuts(sourceDuration = Infinity) {
@@ -5766,6 +6341,8 @@ function setExportProgress(progress, width, height, frameRate, currentTime, dura
 async function renderCaptionedVideoOptimized(preset) {
   if (
     !state.videoFile
+    || selectedExportColorMode() === "hdr"
+    || state.videoGridMode > 1
     || state.sequenceClips.length > 1
     || state.overlayVideoClips.some(clipTrackIsVisible)
     || [...state.sequenceClips, ...state.overlayVideoClips, ...state.audioClips]
@@ -5864,10 +6441,7 @@ async function renderCaptionedVideoOptimized(preset) {
     return true;
   }
 
-  const canvas = elements.renderCanvas;
-  const context = canvas.getContext("2d", { alpha: false });
-  canvas.width = width;
-  canvas.height = height;
+  const { canvas, context } = prepareExportCanvas(width, height);
   state.exportCanceled = false;
   state.exporting = true;
   state.isCutSeeking = false;
@@ -6087,10 +6661,8 @@ async function renderCaptionedVideoRealtime(preset) {
 
   const { width, height } = outputDimensions(preset);
   const frameRate = selectedExportFrameRate();
-  const canvas = elements.renderCanvas;
-  const context = canvas.getContext("2d", { alpha: false });
-  canvas.width = width;
-  canvas.height = height;
+  const colorMode = selectedExportColorMode();
+  const { canvas, context } = prepareExportCanvas(width, height);
 
   const previousTime = projectCurrentTime();
   const previousMuted = elements.video.muted;
@@ -6108,7 +6680,7 @@ async function renderCaptionedVideoRealtime(preset) {
   elements.exportTitle.textContent = "Renderizando vídeo";
   elements.saveExportButton.hidden = true;
   elements.cancelExportButton.textContent = "Cancelar";
-  elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · preparando áudio`;
+  elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${colorMode.toUpperCase()} · preparando áudio`;
   elements.exportProgress.style.width = "0%";
   elements.exportPercent.textContent = "0%";
 
@@ -6132,6 +6704,9 @@ async function renderCaptionedVideoRealtime(preset) {
     const bitsPerSecond = exportVideoBitrate(preset, frameRate);
     const recorder = createCompatibleMediaRecorder(canvasStream, mimeType, bitsPerSecond);
     const recordingMimeType = recorder.mimeType || mimeType;
+    if (colorMode === "hdr" && (!state.hdrCanvasSupported || !/hvc1|hev1/i.test(recordingMimeType))) {
+      showToast("HDR não é preservado por este codificador; a exportação seguirá compatível em SDR.");
+    }
     const chunks = [];
     state.recorder = recorder;
 
@@ -6153,15 +6728,16 @@ async function renderCaptionedVideoRealtime(preset) {
       const currentProjectTime = projectCurrentTime();
       const baseGap = !trackIsVisible("video", "base")
         || state.cuts.some((cut) => isBaseCut(cut) && cut.ripple === false && currentProjectTime >= cut.start && currentProjectTime < cut.end);
-      if (!baseGap) drawVideoFrame(context, width, height);
-      if (!baseGap) drawBaseFadeOverlay(context, width, height, currentProjectTime);
+      const drewGrid = drawVideoGridFrame(context, width, height, currentProjectTime);
+      if (!drewGrid && !baseGap) drawVideoFrame(context, width, height);
+      if (!drewGrid && !baseGap) drawBaseFadeOverlay(context, width, height, currentProjectTime);
       drawImageOverlays(context, width, height, currentProjectTime);
       drawCaptionFrame(context, width, height, currentProjectTime);
       const totalDuration = projectDuration();
       const progress = totalDuration ? Math.min(100, (currentProjectTime / totalDuration) * 100) : 0;
       elements.exportProgress.style.width = `${progress}%`;
       elements.exportPercent.textContent = `${Math.round(progress)}%`;
-      elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${formatClock(currentProjectTime)} de ${formatClock(totalDuration)}`;
+      elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${colorMode.toUpperCase()} · ${formatClock(currentProjectTime)} de ${formatClock(totalDuration)}`;
     };
 
     const scheduleFrame = () => {
@@ -6291,6 +6867,10 @@ function editedCues() {
 
 async function exportProject() {
   if (!elements.video.src) return;
+  if (state.narrationRecorder) {
+    showToast("Finalize a narração antes de exportar.");
+    return;
+  }
   const format = elements.exportFormat.value;
 
   if (format.startsWith("video-")) {
@@ -6361,6 +6941,9 @@ async function exportProject() {
         audioTrackOrder: state.audioTrackOrder,
         hiddenVideoTrackIds: [...state.hiddenVideoTrackIds],
         hiddenAudioTrackIds: [...state.hiddenAudioTrackIds],
+        videoGridMode: state.videoGridMode,
+        videoGridClipIds: state.videoGridClipIds,
+        exportColorMode: selectedExportColorMode(),
         exportFrameRate: Number(elements.exportFrameRate.value),
         lut: state.lut
           ? {
@@ -6406,7 +6989,11 @@ function saveLocalProject() {
     outlineWidth: elements.captionOutlineWidth.value,
     outlineColor: elements.captionOutlineColor.value,
     videoAdjustments: state.videoAdjustments,
+    exportFormat: elements.exportFormat.value,
     exportFrameRate: elements.exportFrameRate.value,
+    exportColorMode: selectedExportColorMode(),
+    videoGridMode: state.videoGridMode,
+    videoGridClipIds: state.videoGridClipIds,
     lutIntensity: elements.lutIntensity.value,
     lutPresetId: state.activeLutPresetId,
     cuts: state.cuts,
@@ -6450,6 +7037,13 @@ function restoreLocalProject() {
     elements.exportFrameRate.value = ["24", "30", "60"].includes(data.exportFrameRate)
       ? data.exportFrameRate
       : "30";
+    if (["video-720", "video-1080", "video-4k", "srt", "vtt", "json"].includes(data.exportFormat)) {
+      elements.exportFormat.value = data.exportFormat;
+    }
+    elements.exportColorMode.value = data.exportColorMode === "hdr" ? "hdr" : "sdr";
+    state.videoGridMode = [2, 3, 4].includes(Number(data.videoGridMode)) ? Number(data.videoGridMode) : 1;
+    state.videoGridClipIds = Array.isArray(data.videoGridClipIds) ? data.videoGridClipIds.filter((id) => typeof id === "string") : [];
+    updateVideoGridButtons();
     elements.lutIntensity.value = data.lutIntensity || "100";
     elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
     state.activeLutPresetId = data.lutPresetId || null;
@@ -6589,7 +7183,10 @@ elements.video.addEventListener("play", () => {
   updatePlayer();
   startPreviewMotion();
 });
-elements.video.addEventListener("pause", stopPreviewMotion);
+elements.video.addEventListener("pause", () => {
+  stopPreviewMotion();
+  if (state.narrationRecorder && !state.exporting) stopNarrationRecording();
+});
 elements.video.addEventListener("ended", async (event) => {
   if (state.activeSequenceIndex < state.sequenceClips.length - 1) {
     event.stopImmediatePropagation();
@@ -6895,6 +7492,9 @@ elements.overlayVideoInput.addEventListener("change", async (event) => {
   if (trackId) await addVisualClips(Array.from(event.target.files || []), trackId);
   event.target.value = "";
 });
+elements.videoGridButtons.forEach((button) => {
+  button.addEventListener("click", () => applyVideoGrid(Number(button.dataset.videoGrid)));
+});
 elements.audioTrackInput.addEventListener("change", async (event) => {
   const trackId = state.pendingAudioTrackId || "audio-base";
   state.pendingAudioTrackId = null;
@@ -6965,7 +7565,9 @@ elements.mediaClipVolume.addEventListener("input", () => {
     clip.mediaElement.volume = node ? 1 : clamp(clip.volume, 0, 1);
     if (node) node.gain.gain.value = clip.volume;
   }
-  if (clip.volume > 1) audioTracksFromMixGraph().catch(() => {});
+  preparePreviewAudioMixer(true)
+    .then(() => updateMediaPreview())
+    .catch((error) => console.warn("Mixer de áudio indisponível", error));
   syncAudioClips();
   updateMediaPreview();
 });
@@ -7067,7 +7669,9 @@ function updateExportPerformanceNotice() {
   saveLocalProject();
   const isIOS = isIOSDevice();
   const frameRate = Number(elements.exportFrameRate.value);
-  if (isIOS && elements.exportFormat.value === "video-4k" && frameRate === 60) {
+  if (elements.exportColorMode.value === "hdr") {
+    showToast("HDR usa Display‑P3 e HEVC quando disponíveis; outros codificadores exportam em SDR compatível.");
+  } else if (isIOS && elements.exportFormat.value === "video-4k" && frameRate === 60) {
     showToast("4K a 60 FPS exige muito do iPhone. 1080p a 60 FPS é mais estável.");
   } else if (isIOS && frameRate === 60) {
     showToast("60 FPS preserva vídeos mais fluidos, mas a exportação demora mais.");
@@ -7077,6 +7681,7 @@ function updateExportPerformanceNotice() {
 }
 elements.exportFormat.addEventListener("change", updateExportPerformanceNotice);
 elements.exportFrameRate.addEventListener("change", updateExportPerformanceNotice);
+elements.exportColorMode.addEventListener("change", updateExportPerformanceNotice);
 elements.cancelExportButton.addEventListener("click", () => {
   const wasExporting = Boolean(state.recorder || state.optimizedOutput);
   const optimizedOutput = state.optimizedOutput;
@@ -7224,7 +7829,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=79", { updateViaCache: "none" })
+      .register("service-worker.js?v=83", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
