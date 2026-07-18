@@ -280,6 +280,7 @@ const state = {
   videoGridLayout: "auto",
   projectAspect: "source",
   gridCellCanvas: null,
+  draggingGridCell: null,
 };
 
 const PROJECT_ASPECTS = Object.freeze({
@@ -718,6 +719,16 @@ function projectDuration() {
 
 function activeSequenceClip() {
   return state.sequenceClips[state.activeSequenceIndex] || null;
+}
+
+function baseTrackVisibleAtTime(time) {
+  if (!trackIsVisible("video", "base")) return false;
+  return !state.cuts.some((cut) => (
+    isBaseCut(cut)
+    && cut.ripple === false
+    && time >= cut.start
+    && time < cut.end
+  ));
 }
 
 function projectCurrentTime() {
@@ -2953,7 +2964,17 @@ function updateVideoGridButtons() {
   renderVideoGridPresets();
 }
 
-function setGridElementRect(element, slot) {
+function gridFocusForClip(clip) {
+  const x = Number(clip?.gridFocusX);
+  const y = Number(clip?.gridFocusY);
+  return {
+    x: clamp(Number.isFinite(x) ? x : 50, 0, 100),
+    y: clamp(Number.isFinite(y) ? y : 50, 0, 100),
+  };
+}
+
+function setGridElementRect(element, slot, clip = null) {
+  const focus = gridFocusForClip(clip);
   element.style.inset = "auto";
   element.style.left = `${slot.x}%`;
   element.style.top = `${slot.y}%`;
@@ -2961,13 +2982,124 @@ function setGridElementRect(element, slot) {
   element.style.height = `${slot.height}%`;
   element.style.transform = "none";
   element.style.objectFit = "cover";
+  element.style.objectPosition = `${focus.x}% ${focus.y}%`;
 }
 
 function resetGridElementRect(element, base = false) {
-  ["inset", "left", "top", "right", "bottom", "width", "height", "transform", "objectFit"].forEach((name) => {
+  ["inset", "left", "top", "right", "bottom", "width", "height", "transform", "objectFit", "objectPosition"].forEach((name) => {
     element.style[name] = "";
   });
   if (!base) element.style.height = "auto";
+}
+
+function gridParticipantSourceSize(item) {
+  const source = item?.type === "base" ? elements.video : item?.source;
+  return {
+    width: source?.videoWidth || item?.clip?.width || 0,
+    height: source?.videoHeight || item?.clip?.height || 0,
+  };
+}
+
+function applyGridFocusToPreview(item) {
+  const focus = gridFocusForClip(item?.clip);
+  const value = `${focus.x}% ${focus.y}%`;
+  if (item?.type === "base") {
+    elements.video.style.objectPosition = value;
+    elements.lutPreviewCanvas.style.objectPosition = value;
+  } else if (item?.clip?.element) {
+    item.clip.element.style.objectPosition = value;
+  }
+}
+
+function renderGridInteractionHandles(grid, slots) {
+  const activeKeys = new Set((grid?.participants || []).map((item) => item.key));
+  elements.mediaOverlayLayer.querySelectorAll(".grid-cell-control").forEach((control) => {
+    if (!activeKeys.has(control.dataset.gridKey)) control.remove();
+  });
+  if (!grid?.participants?.length) return;
+
+  grid.participants.forEach((item, index) => {
+    const slot = slots[index];
+    if (!slot) return;
+    const selector = `.grid-cell-control[data-grid-key="${CSS.escape(item.key)}"]`;
+    let control = elements.mediaOverlayLayer.querySelector(selector);
+    if (!control) {
+      control = document.createElement("button");
+      control.type = "button";
+      control.className = "grid-cell-control";
+      control.dataset.gridKey = item.key;
+      control.addEventListener("pointerdown", (event) => {
+        if (event.button !== undefined && event.button !== 0) return;
+        const current = activeVideoGrid()?.participants.find((candidate) => candidate.key === control.dataset.gridKey);
+        if (!current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        elements.video.pause();
+        const focus = gridFocusForClip(current.clip);
+        state.draggingGridCell = {
+          key: current.key,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          focusX: focus.x,
+          focusY: focus.y,
+          bounds: control.getBoundingClientRect(),
+        };
+        control.classList.add("dragging");
+        control.setPointerCapture?.(event.pointerId);
+        selectMediaClip(current.clip.id, true);
+      });
+      control.addEventListener("pointermove", (event) => {
+        const drag = state.draggingGridCell;
+        if (!drag || drag.key !== control.dataset.gridKey) return;
+        const current = activeVideoGrid()?.participants.find((candidate) => candidate.key === drag.key);
+        if (!current) return;
+        const source = gridParticipantSourceSize(current);
+        const targetAspect = drag.bounds.width / Math.max(1, drag.bounds.height);
+        const sourceAspect = source.width / Math.max(1, source.height);
+        let focusX = drag.focusX;
+        let focusY = drag.focusY;
+        if (sourceAspect > targetAspect) {
+          const renderedWidth = drag.bounds.height * sourceAspect;
+          const overflow = Math.max(1, renderedWidth - drag.bounds.width);
+          focusX = clamp(drag.focusX - ((event.clientX - drag.startX) / overflow) * 100, 0, 100);
+        } else if (sourceAspect < targetAspect) {
+          const renderedHeight = drag.bounds.width / Math.max(0.0001, sourceAspect);
+          const overflow = Math.max(1, renderedHeight - drag.bounds.height);
+          focusY = clamp(drag.focusY - ((event.clientY - drag.startY) / overflow) * 100, 0, 100);
+        }
+        current.clip.gridFocusX = focusX;
+        current.clip.gridFocusY = focusY;
+        applyGridFocusToPreview(current);
+      });
+      const finish = (event) => {
+        if (state.draggingGridCell?.key !== control.dataset.gridKey) return;
+        state.draggingGridCell = null;
+        control.classList.remove("dragging");
+        if (control.hasPointerCapture?.(event.pointerId)) control.releasePointerCapture(event.pointerId);
+        saveLocalProject();
+      };
+      control.addEventListener("pointerup", finish);
+      control.addEventListener("pointercancel", finish);
+      control.addEventListener("keydown", (event) => {
+        const current = activeVideoGrid()?.participants.find((candidate) => candidate.key === control.dataset.gridKey);
+        if (!current || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+        event.preventDefault();
+        const focus = gridFocusForClip(current.clip);
+        current.clip.gridFocusX = clamp(focus.x + (event.key === "ArrowLeft" ? -3 : event.key === "ArrowRight" ? 3 : 0), 0, 100);
+        current.clip.gridFocusY = clamp(focus.y + (event.key === "ArrowUp" ? -3 : event.key === "ArrowDown" ? 3 : 0), 0, 100);
+        applyGridFocusToPreview(current);
+        saveLocalProject();
+      });
+      elements.mediaOverlayLayer.append(control);
+    }
+    control.style.left = `${slot.x}%`;
+    control.style.top = `${slot.y}%`;
+    control.style.width = `${slot.width}%`;
+    control.style.height = `${slot.height}%`;
+    control.classList.toggle("selected", item.clip.id === state.selectedMediaClipId);
+    control.setAttribute("aria-label", `Reposicionar ${item.clip.name || `vídeo ${index + 1}`} dentro da grade`);
+  });
 }
 
 function applyVideoGrid(count) {
@@ -3041,8 +3173,9 @@ function updateMediaPreview(time = projectCurrentTime()) {
   renderMediaOverlayElements();
   elements.videoShell.classList.toggle("video-grid-active", gridActive);
   if (gridActive && baseGridIndex >= 0) {
-    setGridElementRect(elements.video, gridSlots[baseGridIndex]);
-    setGridElementRect(elements.lutPreviewCanvas, gridSlots[baseGridIndex]);
+    const baseItem = grid.participants[baseGridIndex];
+    setGridElementRect(elements.video, gridSlots[baseGridIndex], baseItem.clip);
+    setGridElementRect(elements.lutPreviewCanvas, gridSlots[baseGridIndex], baseItem.clip);
   } else {
     resetGridElementRect(elements.video, true);
     resetGridElementRect(elements.lutPreviewCanvas, true);
@@ -3068,7 +3201,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
     }
     const motion = mediaClipAnimation(clip, time);
     if (gridVideo) {
-      setGridElementRect(clip.element, gridSlots[gridIndex]);
+      setGridElementRect(clip.element, gridSlots[gridIndex], clip);
     } else {
       resetGridElementRect(clip.element);
       clip.element.style.left = `${clip.x}%`;
@@ -3091,17 +3224,15 @@ function updateMediaPreview(time = projectCurrentTime()) {
     if (clip.type === "video") {
       const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, clip.mediaElement.duration || Infinity);
       const drift = localTime - (clip.mediaElement.currentTime || 0);
-      const hardSyncThreshold = gridVideo ? 0.18 : 0.45;
+      const hardSyncThreshold = gridVideo ? 0.75 : 0.9;
       const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > hardSyncThreshold;
-      if (hardSync && !clip.mediaElement.seeking && Math.abs(drift) > 0.04) {
+      if (hardSync && !clip.mediaElement.seeking && Math.abs(drift) > (elements.video.paused ? 0.015 : 0.08)) {
         clip.mediaElement.currentTime = localTime;
       }
       clip.previewWasActive = true;
       const rate = clipPlaybackRate(clip);
-      const correction = !hardSync && Math.abs(drift) > 0.025 ? clamp(drift * 0.22, -0.04, 0.04) : 0;
-      const desiredRate = clamp(rate + correction, 0.25, 5);
-      if (Math.abs(clip.mediaElement.playbackRate - desiredRate) > 0.004) {
-        clip.mediaElement.playbackRate = desiredRate;
+      if (Math.abs(clip.mediaElement.playbackRate - rate) > 0.004) {
+        clip.mediaElement.playbackRate = rate;
       }
       const graphNode = state.audioTrackNodes.get(clip.id);
       const transition = trackTransitionAtTime(clip, time);
@@ -3111,10 +3242,11 @@ function updateMediaPreview(time = projectCurrentTime()) {
       setClipPreviewPlayback(clip, clip.mediaElement, !elements.video.paused);
     }
   });
+  renderGridInteractionHandles(gridActive ? grid : null, gridSlots);
   syncAudioClips(time);
 }
 
-function drawSourceCover(context, source, x, y, width, height) {
+function drawSourceCover(context, source, x, y, width, height, focus = { x: 50, y: 50 }) {
   const sourceWidth = source?.videoWidth || source?.naturalWidth || source?.width;
   const sourceHeight = source?.videoHeight || source?.naturalHeight || source?.height;
   if (!sourceWidth || !sourceHeight || width <= 0 || height <= 0) return false;
@@ -3126,10 +3258,10 @@ function drawSourceCover(context, source, x, y, width, height) {
   let sh = sourceHeight;
   if (sourceAspect > targetAspect) {
     sw = sourceHeight * targetAspect;
-    sx = (sourceWidth - sw) / 2;
+    sx = (sourceWidth - sw) * clamp((Number(focus.x) || 0) / 100, 0, 1);
   } else {
     sh = sourceWidth / targetAspect;
-    sy = (sourceHeight - sh) / 2;
+    sy = (sourceHeight - sh) * clamp((Number(focus.y) || 0) / 100, 0, 1);
   }
   context.drawImage(source, sx, sy, sw, sh, x, y, width, height);
   return true;
@@ -3147,8 +3279,9 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
     const cellWidth = Math.max(1, Math.round(width * slot.width / 100));
     const cellHeight = Math.max(1, Math.round(height * slot.height / 100));
     let source = item.type === "base" ? baseSource : sourceOverrides?.get(item.key) || item.source;
+    let focus = gridFocusForClip(item.clip);
     let opacity = item.type === "base"
-      ? clipFadeFactor(item.clip, time)
+      ? (baseTrackVisibleAtTime(time) ? clipFadeFactor(item.clip, time) : 0)
       : mediaClipAnimation(item.clip, time).opacity;
 
     if (item.type === "base" && (state.lut || hasVideoAdjustments())) {
@@ -3159,12 +3292,13 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
       const cellContext = cell.getContext("2d", { alpha: false });
       cellContext.fillStyle = "#000";
       cellContext.fillRect(0, 0, cellWidth, cellHeight);
-      drawSourceCover(cellContext, source, 0, 0, cellWidth, cellHeight);
+      drawSourceCover(cellContext, source, 0, 0, cellWidth, cellHeight, focus);
       if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", cellWidth, cellHeight, cell)) {
         source = elements.lutRenderCanvas;
       } else {
         source = cell;
       }
+      focus = { x: 50, y: 50 };
     }
 
     context.save();
@@ -3172,7 +3306,7 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
     context.rect(x, y, cellWidth, cellHeight);
     context.clip();
     context.globalAlpha = opacity;
-    drawSourceCover(context, source, x, y, cellWidth, cellHeight);
+    drawSourceCover(context, source, x, y, cellWidth, cellHeight, focus);
     context.restore();
   });
   return true;
@@ -3215,11 +3349,11 @@ function syncAudioClips(time = projectCurrentTime()) {
     }
     const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, audio.duration || Infinity);
     const drift = localTime - (audio.currentTime || 0);
-    const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > 0.45;
-    if (hardSync && !audio.seeking && Math.abs(drift) > 0.035) audio.currentTime = localTime;
+    const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > 0.9;
+    if (hardSync && !audio.seeking && Math.abs(drift) > (elements.video.paused ? 0.015 : 0.08)) audio.currentTime = localTime;
     clip.previewWasActive = true;
     const rate = clipPlaybackRate(clip);
-    audio.playbackRate = !hardSync ? clamp(rate + drift * 0.14, 0.25, 5) : rate;
+    if (Math.abs(audio.playbackRate - rate) > 0.004) audio.playbackRate = rate;
     const graphNode = state.audioTrackNodes.get(clip.id);
     const transition = trackTransitionAtTime(clip, time);
     const transitionGain = (transition?.type === "fade" ? transition.progress : 1) * clipFadeFactor(clip, time);
@@ -6289,15 +6423,21 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
 
   if (state.videoFile && hasBaseAudio) {
     const baseBuffer = await offline.decodeAudioData(await state.videoFile.arrayBuffer());
-    keptSourceSegments(sourceDuration).forEach((segment) => {
+    const primaryClip = state.sequenceClips[0];
+    const visiblePrimaryRanges = primaryClip ? visibleSequenceSegments(primaryClip) : [];
+    const baseRanges = keptSourceSegments(sourceDuration).flatMap((kept) => (
+      visiblePrimaryRanges
+        .map((visible) => ({ start: Math.max(kept.start, visible.start), end: Math.min(kept.end, visible.end) }))
+        .filter((range) => range.end - range.start > 0.000001)
+    ));
+    baseRanges.forEach((segment) => {
       const segmentDuration = Math.min(segment.end, baseBuffer.duration) - segment.start;
       if (segmentDuration <= 0) return;
       const source = offline.createBufferSource();
       const gain = offline.createGain();
       source.buffer = baseBuffer;
-      const baseClip = state.sequenceClips[0];
       const outputStart = editedTime(segment.start);
-      scheduleClipGainAutomation(gain.gain, baseClip, segment.start, segment.start + segmentDuration, outputStart, clipOutputVolume(baseClip));
+      scheduleClipGainAutomation(gain.gain, primaryClip, segment.start, segment.start + segmentDuration, outputStart, clipOutputVolume(primaryClip));
       source.connect(gain);
       gain.connect(offline.destination);
       source.start(outputStart, segment.start, segmentDuration);
@@ -6350,6 +6490,12 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
     await mixTimelineClip(clip);
   }
   return offline.startRendering();
+}
+
+function optimizedPrimarySequenceAvailable() {
+  const primary = state.sequenceClips[0];
+  if (!primary?.file || primary.file !== state.videoFile) return false;
+  return state.sequenceClips.slice(1).every((clip) => visibleSequenceSegments(clip).length === 0);
 }
 
 function waitForSeek(video) {
@@ -6670,11 +6816,10 @@ async function renderCaptionedVideoOptimized(preset) {
   ));
   if (
     !state.videoFile
-    || state.sequenceClips.length > 1
+    || !optimizedPrimarySequenceAvailable()
     || unsupportedOverlayVideo
     || [...state.sequenceClips, ...state.overlayVideoClips, ...state.audioClips]
       .some((clip) => Math.abs(clipPlaybackRate(clip) - 1) > 0.001)
-    || state.cuts.some((cut) => cut.ripple === false)
     || state.cuts.some((cut) => !isBaseCut(cut))
     || !window.VideoEncoder
     || !window.VideoDecoder
@@ -6761,7 +6906,7 @@ async function renderCaptionedVideoOptimized(preset) {
     }
   }
 
-  const sourceDuration = elements.video.duration || await input.computeDuration();
+  const sourceDuration = await input.computeDuration();
   const editedDuration = keptSourceSegments(sourceDuration)
     .reduce((total, segment) => total + segment.end - segment.start, 0);
   if (editedDuration <= 0.01) {
@@ -6912,7 +7057,7 @@ async function renderCaptionedVideoOptimized(preset) {
         context.fillStyle = "#000000";
         context.fillRect(0, 0, width, height);
         const drewGrid = drawVideoGridFrame(context, width, height, sourceTime, lastFrame, decodedGridSources);
-        if (!drewGrid && trackIsVisible("video", "base")) {
+        if (!drewGrid && baseTrackVisibleAtTime(sourceTime)) {
           drawVideoFrame(context, width, height, lastFrame, transitionAtEditedTime(outputTime));
           drawBaseFadeOverlay(context, width, height, sourceTime);
         }
@@ -7347,6 +7492,9 @@ async function exportProject() {
           ...(["audio", "video", "image"].includes(clip.type) ? { trackId: clip.trackId } : {}),
           ...(["image", "video"].includes(clip.type)
             ? { x: clip.x, y: clip.y, size: clip.size, opacity: clip.opacity, animation: clip.animation }
+            : {}),
+          ...(["sequence", "video"].includes(clip.type)
+            ? { gridFocusX: gridFocusForClip(clip).x, gridFocusY: gridFocusForClip(clip).y }
             : {}),
           ...(["audio", "video", "sequence"].includes(clip.type) ? { volume: clip.volume } : {}),
           ...(["audio", "video", "sequence"].includes(clip.type)
@@ -8272,7 +8420,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=87", { updateViaCache: "none" })
+      .register("service-worker.js?v=88", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
