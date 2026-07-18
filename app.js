@@ -128,7 +128,6 @@ const elements = {
   audioTrackInput: document.querySelector("#audioTrackInput"),
   mediaTimeline: document.querySelector("#mediaTimeline"),
   sequenceTrackLane: document.querySelector("#sequenceTrackLane"),
-  imageTrackLane: document.querySelector("#imageTrackLane"),
   audioTrackLane: document.querySelector("#audioTrackLane"),
   mediaPlayheads: document.querySelectorAll("[data-media-playhead]"),
   mediaInspectorEmpty: document.querySelector("#mediaInspectorEmpty"),
@@ -366,7 +365,6 @@ function composeEditorLayout() {
   captionLane.append(elements.timelineEmpty, elements.cueList);
   captionRow.append(captionLabel, captionLane);
   elements.mediaTimeline.append(captionRow);
-  elements.imageTrackLane.closest(".media-track-row")?.classList.add("image-track-row");
   const reviewPanel = elements.editorTools.querySelector('[data-tool-panel="review"]');
   reviewPanel.prepend(document.querySelector(".quick-sync-actions"));
   reviewPanel.append(elements.timingTools);
@@ -378,8 +376,7 @@ function composeEditorLayout() {
   elements.stage.append(elements.editorTools, elements.reviewEditor);
 
   const trackActions = [
-    [elements.sequenceTrackLane, elements.sequenceVideoInput, "Adicionar vídeo à sequência"],
-    [elements.imageTrackLane, elements.imageTrackInput, "Adicionar imagem"],
+    [elements.sequenceTrackLane, elements.sequenceVideoInput, "Adicionar vídeo ou imagem à faixa V1"],
     [elements.audioTrackLane, elements.audioTrackInput, "Adicionar áudio"],
   ];
   trackActions.forEach(([lane, input, label]) => {
@@ -393,6 +390,22 @@ function composeEditorLayout() {
     button.setAttribute("aria-label", label);
     button.addEventListener("click", () => input.click());
     trackLabel.append(button);
+  });
+
+  elements.sequenceTrackLane.addEventListener("dragover", (event) => {
+    if (!visualFilesFromTransfer(event.dataTransfer).length) return;
+    event.preventDefault();
+    elements.sequenceTrackLane.classList.add("drop-active");
+  });
+  elements.sequenceTrackLane.addEventListener("dragleave", () => elements.sequenceTrackLane.classList.remove("drop-active"));
+  elements.sequenceTrackLane.addEventListener("drop", async (event) => {
+    const files = visualFilesFromTransfer(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    elements.sequenceTrackLane.classList.remove("drop-active");
+    const bounds = elements.sequenceTrackLane.getBoundingClientRect();
+    const start = clamp((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration();
+    await addVisualClips(files, "base", start);
   });
 
   [
@@ -2398,7 +2411,7 @@ function mediaClipAnimation(clip, time) {
 }
 
 function renderMediaOverlayElements() {
-  const overlayClips = [...orderedOverlayVideoClips(), ...state.imageClips];
+  const overlayClips = orderedVisualClips();
   const knownIds = new Set(overlayClips.map((clip) => clip.id));
   elements.mediaOverlayLayer.querySelectorAll("[data-media-clip-id]").forEach((node) => {
     if (!knownIds.has(node.dataset.mediaClipId)) node.remove();
@@ -2406,11 +2419,9 @@ function renderMediaOverlayElements() {
 
   overlayClips.forEach((clip) => {
     const media = clip.type === "video" ? clip.mediaElement : clip.image;
-    const layerIndex = clip.type === "video" && clip.id === state.selectedMediaClipId
+    const layerIndex = clip.id === state.selectedMediaClipId
       ? 200
-      : clip.type === "image"
-      ? 100
-      : 10 + Math.max(0, state.videoTrackOrder.indexOf(clip.trackId));
+      : 10 + Math.max(-1, state.videoTrackOrder.indexOf(clip.trackId));
     media.style.zIndex = String(layerIndex);
     if (!clip.element?.isConnected) {
       media.className = `media-overlay-image${clip.type === "video" ? " media-overlay-video" : ""}`;
@@ -2556,7 +2567,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
     playhead.style.left = duration ? `${clamp(time / duration) * 100}%` : "0%";
   });
   renderMediaOverlayElements();
-  [...orderedOverlayVideoClips(), ...state.imageClips].forEach((clip) => {
+  orderedVisualClips().forEach((clip) => {
     const active = clipIsActiveAtTime(clip, time);
     if (!clip.element) return;
     const fullSizeVideo = clip.type === "video" && (clip.size ?? 100) >= 95;
@@ -2611,7 +2622,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
 }
 
 function drawImageOverlays(context, width, height, time) {
-  [...orderedOverlayVideoClips(), ...state.imageClips].forEach((clip) => {
+  orderedVisualClips().forEach((clip) => {
     const source = clip.type === "video" ? clip.mediaElement : clip.image;
     const sourceWidth = source?.videoWidth || source?.naturalWidth;
     const sourceHeight = source?.videoHeight || source?.naturalHeight;
@@ -2706,7 +2717,7 @@ function createTrackVisibilityButton(kind, trackId, label) {
 function clipTrackIsVisible(clip) {
   if (!clip) return false;
   if (clip.type === "sequence") return trackIsVisible("video", "base");
-  if (clip.type === "video") return trackIsVisible("video", clip.trackId);
+  if (["video", "image"].includes(clip.type)) return trackIsVisible("video", clip.trackId || "base");
   if (clip.type === "audio") return trackIsVisible("audio", clip.trackId || "audio-base");
   return true;
 }
@@ -2716,30 +2727,46 @@ function clipOutputVolume(clip) {
 }
 
 function ensureVideoTrack(trackId = null, insertIndex = state.videoTrackOrder.length) {
+  if (trackId === "base") return "base";
   if (trackId && state.videoTrackOrder.includes(trackId)) return trackId;
   const id = trackId || crypto.randomUUID();
   state.videoTrackOrder.splice(clamp(insertIndex, 0, state.videoTrackOrder.length), 0, id);
   return id;
 }
 
+function visualTrackClips(trackId) {
+  return [...state.overlayVideoClips, ...state.imageClips]
+    .filter((clip) => (clip.trackId || "base") === trackId);
+}
+
 function cleanupEmptyVideoTracks() {
-  const usedTracks = new Set(state.overlayVideoClips.map((clip) => clip.trackId));
+  const usedTracks = new Set([...state.overlayVideoClips, ...state.imageClips]
+    .map((clip) => clip.trackId)
+    .filter((trackId) => trackId && trackId !== "base"));
   state.videoTrackOrder.filter((id) => !usedTracks.has(id)).forEach((id) => state.hiddenVideoTrackIds.delete(id));
   state.videoTrackOrder = state.videoTrackOrder.filter((id) => usedTracks.has(id));
 }
 
 function orderedOverlayVideoClips() {
-  const order = new Map(state.videoTrackOrder.map((id, index) => [id, index]));
-  return [...state.overlayVideoClips].sort((a, b) => (order.get(a.trackId) ?? 0) - (order.get(b.trackId) ?? 0));
+  const order = new Map([["base", -1], ...state.videoTrackOrder.map((id, index) => [id, index])]);
+  return [...state.overlayVideoClips].sort((a, b) => (order.get(a.trackId || "base") ?? 0) - (order.get(b.trackId || "base") ?? 0));
 }
 
-function videoFilesFromTransfer(dataTransfer) {
-  return Array.from(dataTransfer?.files || []).filter((file) => file.type.startsWith("video/") || /\.mov$/i.test(file.name));
+function orderedVisualClips() {
+  const order = new Map([["base", -1], ...state.videoTrackOrder.map((id, index) => [id, index])]);
+  return [...state.overlayVideoClips, ...state.imageClips]
+    .sort((a, b) => (order.get(a.trackId || "base") ?? 0) - (order.get(b.trackId || "base") ?? 0));
+}
+
+function visualFilesFromTransfer(dataTransfer) {
+  return Array.from(dataTransfer?.files || []).filter((file) => (
+    file.type.startsWith("video/") || file.type.startsWith("image/") || /\.mov$/i.test(file.name)
+  ));
 }
 
 function renderVideoTrackStructure() {
   elements.mediaTimeline.querySelectorAll(".dynamic-video-track-row, .video-track-insert-zone").forEach((node) => node.remove());
-  const imageRow = elements.imageTrackLane.closest(".media-track-row");
+  const audioRow = elements.audioTrackLane.closest(".media-track-row");
   const fragment = document.createDocumentFragment();
 
   const appendInsertZone = (insertIndex) => {
@@ -2748,20 +2775,20 @@ function renderVideoTrackStructure() {
     zone.dataset.videoInsertIndex = String(insertIndex);
     const spacer = document.createElement("span");
     const target = document.createElement("i");
-    target.textContent = "+ nova faixa de vídeo";
+    target.textContent = "+ nova faixa visual";
     zone.append(spacer, target);
     zone.addEventListener("dragover", (event) => {
-      if (!videoFilesFromTransfer(event.dataTransfer).length) return;
+      if (!visualFilesFromTransfer(event.dataTransfer).length) return;
       event.preventDefault();
       zone.classList.add("active");
     });
     zone.addEventListener("dragleave", () => zone.classList.remove("active"));
     zone.addEventListener("drop", async (event) => {
-      const files = videoFilesFromTransfer(event.dataTransfer);
+      const files = visualFilesFromTransfer(event.dataTransfer);
       if (!files.length) return;
       event.preventDefault();
       const trackId = ensureVideoTrack(null, insertIndex);
-      await addOverlayVideos(files, trackId, projectCurrentTime());
+      await addVisualClips(files, trackId, projectCurrentTime());
     });
     fragment.append(zone);
   };
@@ -2775,7 +2802,7 @@ function renderVideoTrackStructure() {
     label.append(
       `V${index + 2}`,
       createTrackVisibilityButton("video", trackId, `V${index + 2}`),
-      createTrackAddButton(`Adicionar vídeo à faixa V${index + 2}`, () => {
+      createTrackAddButton(`Adicionar vídeo ou imagem à faixa V${index + 2}`, () => {
         state.pendingVideoTrackId = trackId;
         elements.overlayVideoInput.click();
       }),
@@ -2788,24 +2815,24 @@ function renderVideoTrackStructure() {
     playhead.dataset.mediaPlayhead = "";
     lane.append(playhead);
     lane.addEventListener("dragover", (event) => {
-      if (!videoFilesFromTransfer(event.dataTransfer).length) return;
+      if (!visualFilesFromTransfer(event.dataTransfer).length) return;
       event.preventDefault();
       lane.classList.add("drop-active");
     });
     lane.addEventListener("dragleave", () => lane.classList.remove("drop-active"));
     lane.addEventListener("drop", async (event) => {
-      const files = videoFilesFromTransfer(event.dataTransfer);
+      const files = visualFilesFromTransfer(event.dataTransfer);
       if (!files.length) return;
       event.preventDefault();
       const bounds = lane.getBoundingClientRect();
       const start = clamp((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration();
-      await addOverlayVideos(files, trackId, start);
+      await addVisualClips(files, trackId, start);
     });
     row.append(label, lane);
     fragment.append(row);
     appendInsertZone(index + 1);
   });
-  imageRow.before(fragment);
+  audioRow.before(fragment);
 }
 
 function ensureAudioTrack(trackId = "audio-base", insertIndex = state.audioTrackOrder.length) {
@@ -2910,7 +2937,7 @@ function videoDropTargetAt(clientY) {
   if (closestZone?.distance <= 16) {
     return { type: "insert", node: closestZone.node, index: Number(closestZone.node.dataset.videoInsertIndex) || 0 };
   }
-  const lane = Array.from(elements.mediaTimeline.querySelectorAll(".dynamic-video-track-lane")).find((node) => {
+  const lane = Array.from(elements.mediaTimeline.querySelectorAll(".sequence-track-lane, .dynamic-video-track-lane")).find((node) => {
     const bounds = node.getBoundingClientRect();
     return clientY >= bounds.top && clientY <= bounds.bottom;
   });
@@ -2918,7 +2945,7 @@ function videoDropTargetAt(clientY) {
 }
 
 function showVideoDropTarget(target) {
-  elements.mediaTimeline.querySelectorAll(".video-track-insert-zone.active, .dynamic-video-track-lane.drop-active")
+  elements.mediaTimeline.querySelectorAll(".video-track-insert-zone.active, .sequence-track-lane.drop-active, .dynamic-video-track-lane.drop-active")
     .forEach((node) => node.classList.remove("active", "drop-active"));
   state.activeVideoDropTarget = target;
   if (target?.type === "insert") target.node.classList.add("active");
@@ -3150,7 +3177,7 @@ function mediaClipBlock(clip, type, duration, segment = null) {
       moved: false,
       magneticCutId: null,
     };
-    if (type === "video") elements.mediaTimeline.classList.add("dragging-video-clip");
+    if (["video", "image"].includes(type)) elements.mediaTimeline.classList.add("dragging-video-clip");
     if (type === "audio") elements.mediaTimeline.classList.add("dragging-audio-clip");
     block.setPointerCapture?.(event.pointerId);
   });
@@ -3160,8 +3187,8 @@ function mediaClipBlock(clip, type, duration, segment = null) {
     const deltaX = event.clientX - drag.startX;
     const deltaY = event.clientY - drag.startY;
     drag.moved ||= Math.hypot(deltaX, deltaY) > 5;
-    if (["video", "audio"].includes(type) && segment && Math.abs(deltaX) > Math.abs(deltaY) + 3) {
-      if (type === "video") showVideoDropTarget(null);
+    if (["video", "image", "audio"].includes(type) && segment && Math.abs(deltaX) > Math.abs(deltaY) + 3) {
+      if (["video", "image"].includes(type)) showVideoDropTarget(null);
       else showAudioDropTarget(null);
       const deltaTime = (deltaX / Math.max(1, drag.laneWidth)) * duration;
       const adjacentCut = state.cuts.find((cut) => {
@@ -3195,10 +3222,10 @@ function mediaClipBlock(clip, type, duration, segment = null) {
     const delta = ((event.clientX - drag.startX) / Math.max(1, drag.laneWidth)) * duration;
     if (!segment) {
       let nextStart = clamp(drag.initialStart + delta, 0, Math.max(0, duration - drag.duration));
-      if (elements.magneticCuts.checked && ["video", "audio"].includes(type)) {
+      if (elements.magneticCuts.checked && ["video", "image", "audio"].includes(type)) {
         const siblings = type === "audio"
           ? state.audioClips.filter((item) => item !== clip && (item.trackId || "audio-base") === (clip.trackId || "audio-base"))
-          : state.overlayVideoClips.filter((item) => item !== clip && item.trackId === clip.trackId);
+          : visualTrackClips(clip.trackId || "base").filter((item) => item !== clip);
         const boundaries = [0, duration, ...siblings.flatMap((item) => [item.start, item.end])];
         const threshold = Math.max(0.08, (14 / Math.max(1, drag.laneWidth)) * duration);
         const candidates = boundaries.flatMap((boundary) => [
@@ -3212,7 +3239,7 @@ function mediaClipBlock(clip, type, duration, segment = null) {
       clip.end = clip.start + drag.duration;
       block.style.left = `${clamp(clip.start / duration) * 100}%`;
     }
-    if (type === "video" && drag.moved) {
+    if (["video", "image"].includes(type) && drag.moved) {
       block.style.transform = `translateY(${deltaY}px)`;
       showVideoDropTarget(videoDropTargetAt(event.clientY));
     }
@@ -3227,7 +3254,7 @@ function mediaClipBlock(clip, type, duration, segment = null) {
   const finishDrag = (event) => {
     const drag = state.draggingTimelineClip;
     if (drag?.clipId !== clip.id) return;
-    const dropTarget = type === "video"
+    const dropTarget = ["video", "image"].includes(type)
       ? state.activeVideoDropTarget
       : type === "audio"
         ? state.activeAudioDropTarget
@@ -3251,7 +3278,7 @@ function mediaClipBlock(clip, type, duration, segment = null) {
         : ensureVideoTrack(null, dropTarget.index);
       if (type === "audio") cleanupEmptyAudioTracks();
       else cleanupEmptyVideoTracks();
-      showToast(`Nova faixa de ${type === "audio" ? "áudio" : "vídeo"} criada.`);
+      showToast(`Nova faixa de ${type === "audio" ? "áudio" : "mídia visual"} criada.`);
     } else if (dropTarget?.type === "track" && dropTarget.trackId !== clip.trackId) {
       clip.trackId = dropTarget.trackId;
       if (type === "audio") cleanupEmptyAudioTracks();
@@ -3529,12 +3556,12 @@ function renderContextualVideoGaps(duration) {
   const allVideoClips = [
     ...state.sequenceClips.map((clip) => ({ ...clip, trackId: "base" })),
     ...state.overlayVideoClips,
+    ...state.imageClips,
   ];
   const globalEnd = duration;
   state.videoTrackOrder.forEach((trackId) => {
     const lane = elements.mediaTimeline.querySelector(`[data-video-track-id="${trackId}"]`);
-    const clips = state.overlayVideoClips
-      .filter((clip) => clip.trackId === trackId)
+    const clips = visualTrackClips(trackId)
       .sort((first, second) => first.start - second.start);
     if (!lane || !clips.length) return;
     for (let index = 1; index < clips.length; index += 1) {
@@ -3586,21 +3613,16 @@ function syncTimelineJunctions() {
     });
   };
 
-  for (let index = 0; index < state.sequenceClips.length - 1; index += 1) {
-    const from = state.sequenceClips[index];
-    const to = state.sequenceClips[index + 1];
-    const fromSegments = visibleSequenceSegments(from);
-    const toSegments = visibleSequenceSegments(to);
-    const fromEnd = fromSegments.at(-1)?.end;
-    const toStart = toSegments[0]?.start;
-    if (Math.abs((fromEnd ?? -1) - from.end) < 0.03 && Math.abs((toStart ?? -1) - to.start) < 0.03) {
-      addJunction(from, to, "base", "V1", from.end);
-    }
+  const baseClips = [...state.sequenceClips, ...visualTrackClips("base")]
+    .sort((first, second) => first.start - second.start);
+  for (let index = 0; index < baseClips.length - 1; index += 1) {
+    const from = baseClips[index];
+    const to = baseClips[index + 1];
+    addJunction(from, to, "base", "V1", mediaContentEnd(from));
   }
 
   state.videoTrackOrder.forEach((trackId, trackIndex) => {
-    const clips = state.overlayVideoClips
-      .filter((clip) => clip.trackId === trackId)
+    const clips = visualTrackClips(trackId)
       .sort((first, second) => first.start - second.start);
     for (let index = 0; index < clips.length - 1; index += 1) {
       const from = clips[index];
@@ -3641,7 +3663,7 @@ function renderMediaTracks() {
   refreshSequenceTiming();
   syncTimelineJunctions();
   const selectedClip = selectedMediaClip();
-  if (selectedClip && ["audio", "video", "sequence"].includes(selectedClip.type)) {
+  if (selectedClip && ["audio", "video", "image", "sequence"].includes(selectedClip.type)) {
     state.selectedMediaSegmentKey = mediaSegmentKey(selectedSegmentForClip(selectedClip));
   }
   renderVideoTrackStructure();
@@ -3649,7 +3671,6 @@ function renderMediaTracks() {
   elements.sequenceTrackLane.closest(".media-track-row")
     ?.classList.toggle("track-hidden", !trackIsVisible("video", "base"));
   elements.sequenceTrackLane.querySelectorAll(".media-clip-block, .base-track-gap, .video-context-gap, .join-indicator").forEach((block) => block.remove());
-  elements.imageTrackLane.querySelectorAll(".media-clip-block, .base-track-gap, .video-context-gap, .join-indicator").forEach((block) => block.remove());
   elements.mediaTimeline.querySelectorAll(".dynamic-video-track-lane")
     .forEach((lane) => lane.querySelectorAll(".media-clip-block, .base-track-gap, .video-context-gap, .join-indicator").forEach((block) => block.remove()));
   elements.mediaTimeline.querySelectorAll(".dynamic-audio-track-lane")
@@ -3659,23 +3680,27 @@ function renderMediaTracks() {
       elements.sequenceTrackLane.append(sequenceClipBlock(clip, index, duration, segment));
     });
   });
+  visualTrackClips("base").forEach((clip) => {
+    const segments = visibleTrackClipSegments(clip);
+    if (segments) segments.forEach((segment) => elements.sequenceTrackLane.append(mediaClipBlock(clip, clip.type, duration, segment)));
+    else elements.sequenceTrackLane.append(mediaClipBlock(clip, clip.type, duration));
+  });
   state.cuts.filter((cut) => isBaseCut(cut) && cut.ripple === false && !cut.layerMove)
     .forEach((cut) => appendTrackGap(elements.sequenceTrackLane, cut, duration));
   state.cuts.filter((cut) => isBaseCut(cut) && cut.ripple !== false && !cut.layerMove)
     .forEach((cut) => appendTrackJoinIndicator(elements.sequenceTrackLane, cut, duration));
   state.videoTrackOrder.forEach((trackId) => {
     const lane = elements.mediaTimeline.querySelector(`[data-video-track-id="${trackId}"]`);
-    state.overlayVideoClips.filter((clip) => clip.trackId === trackId).forEach((clip) => {
+    visualTrackClips(trackId).forEach((clip) => {
       const segments = visibleTrackClipSegments(clip);
-      if (segments) segments.forEach((segment) => lane?.append(mediaClipBlock(clip, "video", duration, segment)));
-      else lane?.append(mediaClipBlock(clip, "video", duration));
+      if (segments) segments.forEach((segment) => lane?.append(mediaClipBlock(clip, clip.type, duration, segment)));
+      else lane?.append(mediaClipBlock(clip, clip.type, duration));
     });
     state.cuts.filter((cut) => cut.ripple === false && !cut.layerMove && (cut.targetKey || "base") === `video:${trackId}`)
       .forEach((cut) => lane && appendTrackGap(lane, cut, duration));
     state.cuts.filter((cut) => cut.ripple !== false && !cut.layerMove && cut.targetKey === `video:${trackId}`)
       .forEach((cut) => lane && appendTrackJoinIndicator(lane, cut, duration));
   });
-  state.imageClips.forEach((clip) => elements.imageTrackLane.append(mediaClipBlock(clip, "image", duration)));
   renderContextualVideoGaps(duration);
   state.audioTrackOrder.forEach((trackId) => {
     const lane = elements.mediaTimeline.querySelector(`[data-audio-track-id="${trackId}"]`);
@@ -3689,10 +3714,6 @@ function renderMediaTracks() {
         .forEach((cut) => lane && appendTrackJoinIndicator(lane, cut, duration));
     });
   });
-  state.cuts.filter((cut) => cut.ripple === false && cut.targetKey?.startsWith("image:"))
-    .forEach((cut) => appendTrackGap(elements.imageTrackLane, cut, duration));
-  state.cuts.filter((cut) => cut.ripple !== false && cut.targetKey?.startsWith("image:"))
-    .forEach((cut) => appendTrackJoinIndicator(elements.imageTrackLane, cut, duration));
   updateMediaInspector();
   updateMediaPreview();
 }
@@ -3880,19 +3901,21 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
   if (files.length) showToast(`${files.length} ${files.length === 1 ? "vídeo adicionado" : "vídeos adicionados"} à faixa.`);
 }
 
-async function addImageClips(files) {
+async function addImageClips(files, requestedTrackId = null, requestedStart = projectCurrentTime()) {
+  const trackId = ensureVideoTrack(requestedTrackId);
   for (const file of files) {
     const url = URL.createObjectURL(file);
     try {
       const image = await loadImageElement(url);
-      const fallbackStart = projectCurrentTime();
+      const fallbackStart = requestedStart;
       const videoDuration = projectDuration() || fallbackStart + 3;
       const start = Number.isFinite(videoDuration)
         ? Math.min(fallbackStart, Math.max(0, videoDuration - 0.1))
         : fallbackStart;
       const clip = {
         id: crypto.randomUUID(), type: "image", name: file.name, file, url, image,
-        start, end: Math.min(videoDuration, start + 3), x: 50, y: 50, size: 42, opacity: 1, animation: "fade",
+        trackId, start, end: Math.min(videoDuration, start + 3), x: 50, y: 50,
+        size: fittedOverlaySize(image), opacity: 1, animation: "fade", thumbnail: url,
       };
       state.imageClips.push(clip);
       state.selectedMediaClipId = clip.id;
@@ -3901,9 +3924,18 @@ async function addImageClips(files) {
       showToast(error.message);
     }
   }
+  cleanupEmptyVideoTracks();
   renderMediaTracks();
   saveLocalProject();
-  if (files.length) showToast(`${files.length} ${files.length === 1 ? "imagem adicionada" : "imagens adicionadas"}.`);
+  if (files.length) showToast(`${files.length} ${files.length === 1 ? "imagem adicionada" : "imagens adicionadas"} à faixa.`);
+}
+
+async function addVisualClips(files, trackId = null, start = projectCurrentTime()) {
+  const resolvedTrackId = ensureVideoTrack(trackId);
+  const videos = files.filter((file) => file.type.startsWith("video/") || /\.mov$/i.test(file.name));
+  const images = files.filter((file) => file.type.startsWith("image/"));
+  if (videos.length) await addOverlayVideos(videos, resolvedTrackId, start);
+  if (images.length) await addImageClips(images, resolvedTrackId, start);
 }
 
 function waitForAudioMetadata(audio) {
@@ -4241,7 +4273,9 @@ function resetCutButton() {
 
 function cutKeyForClip(clip) {
   if (!clip || clip.type === "sequence") return "base";
-  if (clip.type === "video") return `video:${clip.trackId}`;
+  if (["video", "image"].includes(clip.type)) {
+    return (clip.trackId || "base") === "base" ? "base" : `video:${clip.trackId}`;
+  }
   return `${clip.type}:${clip.id}`;
 }
 
@@ -4295,11 +4329,11 @@ function cutTargetAtPlayhead(time) {
     return { key: cutKeyForClip(clip), name, clipId: clip.id, unavailable: !withinClip };
   }
   if (!clip || time < clip.start || time >= clip.end) return { key: "base", name: "V1" };
-  if (clip.type === "video") {
+  if (["video", "image"].includes(clip.type)) {
+    if ((clip.trackId || "base") === "base") return { key: "base", name: "V1" };
     const index = state.videoTrackOrder.indexOf(clip.trackId);
     return { key: cutKeyForClip(clip), name: `V${Math.max(0, index) + 2}` };
   }
-  if (clip.type === "image") return { key: cutKeyForClip(clip), name: "Imagem" };
   if (clip.type === "audio") return { key: cutKeyForClip(clip), name: "Áudio" };
   return { key: "base", name: "V1" };
 }
@@ -6128,7 +6162,7 @@ async function exportProject() {
           name: clip.name,
           start: clip.start,
           end: clip.end,
-          ...(["audio", "video"].includes(clip.type) ? { trackId: clip.trackId } : {}),
+          ...(["audio", "video", "image"].includes(clip.type) ? { trackId: clip.trackId } : {}),
           ...(["image", "video"].includes(clip.type)
             ? { x: clip.x, y: clip.y, size: clip.size, opacity: clip.opacity, animation: clip.animation }
             : {}),
@@ -6655,17 +6689,26 @@ elements.resetAdjustmentsButton.addEventListener("click", () => {
 });
 
 elements.imageTrackInput.addEventListener("change", async (event) => {
-  await addImageClips(Array.from(event.target.files || []));
+  const selected = selectedMediaClip();
+  const selectedTrackId = selected?.type === "sequence"
+    ? "base"
+    : ["video", "image"].includes(selected?.type) ? selected.trackId : null;
+  const trackId = selectedTrackId || state.videoTrackOrder[0] || ensureVideoTrack();
+  await addImageClips(Array.from(event.target.files || []), trackId);
   event.target.value = "";
 });
 elements.sequenceVideoInput.addEventListener("change", async (event) => {
-  await addSequenceVideos(Array.from(event.target.files || []));
+  const files = Array.from(event.target.files || []);
+  const videos = files.filter((file) => file.type.startsWith("video/") || /\.mov$/i.test(file.name));
+  const images = files.filter((file) => file.type.startsWith("image/"));
+  if (videos.length) await addSequenceVideos(videos);
+  if (images.length) await addImageClips(images, "base");
   event.target.value = "";
 });
 elements.overlayVideoInput.addEventListener("change", async (event) => {
   const trackId = state.pendingVideoTrackId;
   state.pendingVideoTrackId = null;
-  if (trackId) await addOverlayVideos(Array.from(event.target.files || []), trackId);
+  if (trackId) await addVisualClips(Array.from(event.target.files || []), trackId);
   event.target.value = "";
 });
 elements.audioTrackInput.addEventListener("change", async (event) => {
@@ -6991,7 +7034,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=75", { updateViaCache: "none" })
+      .register("service-worker.js?v=76", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });

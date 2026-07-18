@@ -23,7 +23,7 @@ Protótipo de editor de legendas guiado por roteiro, preparado para hospedagem n
 - transições de corte arrastáveis e encaixe magnético nos pontos de corte;
 - importação de LUTs 3D no formato `.cube`, com prévia e controle de intensidade;
 - correções de exposição, brilho, contraste, saturação, brilho da cor, temperatura, calor, matiz, realces, sombras e ponto preto;
-- trilhas independentes de vídeo e áudio, com criação automática ao arrastar entre faixas e visibilidade individual;
+- trilhas visuais unificadas para vídeos e imagens, além de trilhas independentes de áudio, com criação automática ao arrastar entre faixas e visibilidade individual;
 - vídeos e imagens sobrepostos redimensionáveis pela alça de canto ou por gesto de pinça no iPhone;
 - seleção da camada exibida em primeiro plano na prévia, sem perder as demais camadas da composição;
 - blocos arrastáveis com duração, posição, tamanho, opacidade, entrada e volume;

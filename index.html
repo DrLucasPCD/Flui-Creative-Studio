@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=75" />
+    <link rel="stylesheet" href="styles.css?v=76" />
   </head>
   <body>
     <header class="topbar">
@@ -416,14 +416,13 @@
 
           <div class="tool-panel media-tools" data-tool-panel="media" hidden>
             <div class="media-file-inputs" hidden>
-              <input id="sequenceVideoInput" type="file" accept="video/*,.mov" multiple hidden />
-              <input id="overlayVideoInput" type="file" accept="video/*,.mov" multiple hidden />
+              <input id="sequenceVideoInput" type="file" accept="video/*,.mov,image/*" multiple hidden />
+              <input id="overlayVideoInput" type="file" accept="video/*,.mov,image/*" multiple hidden />
               <input id="imageTrackInput" type="file" accept="image/*" multiple hidden />
               <input id="audioTrackInput" type="file" accept="audio/*" multiple hidden />
             </div>
             <div class="media-timeline" id="mediaTimeline" aria-label="Trilhas do projeto">
               <div class="media-track-row base-video-track-row"><span>V1</span><div class="media-track-lane sequence-track-lane" id="sequenceTrackLane" data-video-track-id="base"><i class="media-playhead" data-media-playhead></i></div></div>
-              <div class="media-track-row"><span>Imagem</span><div class="media-track-lane" id="imageTrackLane"><i class="media-playhead" data-media-playhead></i></div></div>
               <div class="media-track-row base-audio-track-row"><span>A1</span><div class="media-track-lane dynamic-audio-track-lane" id="audioTrackLane" data-audio-track-id="audio-base"><i class="media-playhead" data-media-playhead></i></div></div>
             </div>
             <div class="media-inspector-empty" id="mediaInspectorEmpty">Nenhuma mídia selecionada</div>
@@ -517,6 +516,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=75"></script>
+    <script src="app.js?v=76"></script>
   </body>
 </html>

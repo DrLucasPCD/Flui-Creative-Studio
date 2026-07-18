@@ -2306,7 +2306,6 @@ body {
   }
 
   .cut-track-row,
-  .image-track-row,
   .audio-track-row:not(:has(.media-clip-block)),
   .dynamic-audio-track-row:not(:has(.media-clip-block)) {
     display: none;
@@ -5069,7 +5068,6 @@ body { padding: 10px; }
   .cut-track-row,
   .base-video-track-row,
   .dynamic-video-track-row,
-  .image-track-row,
   .base-audio-track-row,
   .dynamic-audio-track-row,
   .caption-track-row { display: grid; }
