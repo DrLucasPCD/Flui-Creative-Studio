@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=77" />
+    <link rel="stylesheet" href="styles.css?v=79" />
   </head>
   <body>
     <header class="topbar">
@@ -222,6 +222,7 @@
           <nav class="tool-tabs" aria-label="Tipo de ferramenta">
             <button class="active" type="button" data-tool-tab="caption" aria-selected="true">Legenda</button>
             <button type="button" data-tool-tab="color" aria-selected="false">Cor</button>
+            <button type="button" data-tool-tab="filters" aria-selected="false">Filtros</button>
             <button type="button" data-tool-tab="media" aria-selected="false">Mídia</button>
             <button type="button" data-tool-tab="review" aria-selected="false">Revisão</button>
             <button type="button" data-tool-tab="script" aria-selected="false">Roteiro</button>
@@ -376,7 +377,18 @@
             </div>
           </div>
 
-          <div class="tool-panel color-tools" data-tool-panel="color" hidden>
+          <div class="tool-panel filter-tools" data-tool-panel="filters" hidden>
+            <div class="filter-browser-heading">
+              <span><strong>Filtros</strong><small id="filterCatalogStatus">Carregando...</small></span>
+              <button id="clearFilterPresetButton" type="button">Sem filtro</button>
+            </div>
+            <div class="filter-browser-controls">
+              <input id="filterSearchInput" type="search" placeholder="Buscar filtro" aria-label="Buscar filtro" />
+              <select id="filterCollectionSelect" class="select" aria-label="Coleção de filtros">
+                <option value="all">Todas as coleções</option>
+              </select>
+            </div>
+            <div class="filter-preset-grid" id="filterPresetList" aria-label="Filtros disponíveis"></div>
             <section class="lut-editor" aria-label="LUT do vídeo">
               <div class="lut-heading">
                 <span class="lut-icon" aria-hidden="true">◐</span>
@@ -394,7 +406,9 @@
               </label>
               <button class="lut-remove-button" id="removeLutButton" type="button" title="Remover LUT" disabled><span aria-hidden="true">×</span></button>
             </section>
+          </div>
 
+          <div class="tool-panel color-tools" data-tool-panel="color" hidden>
             <div class="adjustment-heading">
               <strong>Ajustes</strong>
               <button id="resetAdjustmentsButton" type="button">Redefinir</button>
@@ -419,7 +433,7 @@
               <input id="sequenceVideoInput" type="file" accept="video/*,.mov,image/*" multiple hidden />
               <input id="overlayVideoInput" type="file" accept="video/*,.mov,image/*" multiple hidden />
               <input id="imageTrackInput" type="file" accept="image/*" multiple hidden />
-              <input id="audioTrackInput" type="file" accept="audio/*" multiple hidden />
+              <input id="audioTrackInput" type="file" accept="audio/*,video/*,.mov" multiple hidden />
             </div>
             <div class="media-timeline" id="mediaTimeline" aria-label="Trilhas do projeto">
               <div class="media-track-row base-video-track-row"><span>V1</span><div class="media-track-lane sequence-track-lane" id="sequenceTrackLane" data-video-track-id="base"><i class="media-playhead" data-media-playhead></i></div></div>
@@ -516,6 +530,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=77"></script>
+    <script src="app.js?v=79"></script>
   </body>
 </html>

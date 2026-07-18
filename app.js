@@ -115,6 +115,11 @@ const elements = {
   lutIntensity: document.querySelector("#lutIntensity"),
   lutIntensityValue: document.querySelector("#lutIntensityValue"),
   removeLutButton: document.querySelector("#removeLutButton"),
+  filterCatalogStatus: document.querySelector("#filterCatalogStatus"),
+  filterSearchInput: document.querySelector("#filterSearchInput"),
+  filterCollectionSelect: document.querySelector("#filterCollectionSelect"),
+  filterPresetList: document.querySelector("#filterPresetList"),
+  clearFilterPresetButton: document.querySelector("#clearFilterPresetButton"),
   lutPreviewCanvas: document.querySelector("#lutPreviewCanvas"),
   lutRenderCanvas: document.querySelector("#lutRenderCanvas"),
   toolTabs: document.querySelectorAll("[data-tool-tab]"),
@@ -225,6 +230,8 @@ const state = {
   lut: null,
   lutPreviewRenderer: null,
   lutExportRenderer: null,
+  lutPresets: [],
+  activeLutPresetId: null,
   fitCanvas: null,
   optimizedOutput: null,
   videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
@@ -377,7 +384,7 @@ function composeEditorLayout() {
 
   const trackActions = [
     [elements.sequenceTrackLane, elements.sequenceVideoInput, "Adicionar vídeo ou imagem à faixa V1"],
-    [elements.audioTrackLane, elements.audioTrackInput, "Adicionar áudio"],
+    [elements.audioTrackLane, elements.audioTrackInput, "Adicionar áudio ou extrair de vídeo"],
   ];
   trackActions.forEach(([lane, input, label]) => {
     const trackLabel = lane.closest(".media-track-row")?.firstElementChild;
@@ -406,6 +413,22 @@ function composeEditorLayout() {
     const bounds = elements.sequenceTrackLane.getBoundingClientRect();
     const start = clamp((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration();
     await addVisualClips(files, "base", start);
+  });
+
+  elements.audioTrackLane.addEventListener("dragover", (event) => {
+    if (!audioFilesFromTransfer(event.dataTransfer).length) return;
+    event.preventDefault();
+    elements.audioTrackLane.classList.add("drop-active");
+  });
+  elements.audioTrackLane.addEventListener("dragleave", () => elements.audioTrackLane.classList.remove("drop-active"));
+  elements.audioTrackLane.addEventListener("drop", async (event) => {
+    const files = audioFilesFromTransfer(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    elements.audioTrackLane.classList.remove("drop-active");
+    const bounds = elements.audioTrackLane.getBoundingClientRect();
+    const start = clamp((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration();
+    await addAudioClips(files, "audio-base", start);
   });
 
   [
@@ -440,6 +463,7 @@ function composeEditorLayout() {
   const sideItems = [
     ["Editar", "✎", "caption"],
     ["Mídia", "□", "media"],
+    ["Filtros", "◐", "filters"],
     ["Estilos", "◉", "caption"],
     ["Legenda", "T", "caption"],
     ["Áudio", "♫", "media"],
@@ -503,7 +527,7 @@ function composeEditorLayout() {
     <div class="mobile-add-grid"></div>
     <label>Resolução<select></select></label>
     <label>Frame rate<select></select></label>`;
-  [["＋ Vídeo", elements.sequenceVideoInput], ["▧ Foto", elements.imageTrackInput], ["♫ Áudio", elements.audioTrackInput]]
+  [["＋ Vídeo", elements.sequenceVideoInput], ["▧ Foto", elements.imageTrackInput], ["♫ Áudio/vídeo", elements.audioTrackInput]]
     .forEach(([label, input]) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -1773,6 +1797,8 @@ function updateLutControls() {
   elements.lutIntensity.disabled = !hasLut;
   elements.removeLutButton.disabled = !hasLut;
   elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
+  elements.clearFilterPresetButton?.classList.toggle("active", !hasLut);
+  renderFilterPresets();
   if (!hasLut && !hasVideoAdjustments()) elements.lutPreviewCanvas.hidden = true;
 }
 
@@ -1781,6 +1807,7 @@ async function loadLut(file) {
   try {
     const lut = parseCubeLut(await file.text(), file.name);
     state.lut = lut;
+    state.activeLutPresetId = null;
     state.lutPreviewRenderer = null;
     state.lutExportRenderer = null;
     updateLutControls();
@@ -1797,11 +1824,115 @@ async function loadLut(file) {
 function removeLut(notify = true) {
   const hadLut = Boolean(state.lut);
   state.lut = null;
+  state.activeLutPresetId = null;
   elements.lutInput.value = "";
   updateLutControls();
   drawLutPreview();
   saveLocalProject();
   if (notify && hadLut) showToast("LUT removido do vídeo.");
+}
+
+function normalizedFilterText(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function visibleLutPresets() {
+  const query = normalizedFilterText(elements.filterSearchInput?.value);
+  const collection = elements.filterCollectionSelect?.value || "all";
+  return state.lutPresets.filter((preset) => (
+    (collection === "all" || preset.collection === collection)
+    && (!query || normalizedFilterText(`${preset.name} ${preset.collection}`).includes(query))
+  ));
+}
+
+function renderFilterPresets() {
+  if (!elements.filterPresetList) return;
+  const presets = visibleLutPresets();
+  const fragment = document.createDocumentFragment();
+  presets.forEach((preset) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "filter-preset-card";
+    button.classList.toggle("active", state.activeLutPresetId === preset.id);
+    button.setAttribute("aria-pressed", String(state.activeLutPresetId === preset.id));
+    button.setAttribute("aria-label", `Aplicar filtro ${preset.name}`);
+
+    const image = document.createElement("img");
+    image.src = encodeURI(preset.thumbnail);
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    const label = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = preset.name;
+    const collection = document.createElement("small");
+    collection.textContent = preset.collection;
+    label.append(name, collection);
+    button.append(image, label);
+    button.addEventListener("click", () => loadLutPreset(preset, button));
+    fragment.append(button);
+  });
+
+  if (!presets.length) {
+    const empty = document.createElement("p");
+    empty.className = "filter-preset-empty";
+    empty.textContent = "Nenhum filtro encontrado.";
+    fragment.append(empty);
+  }
+  elements.filterPresetList.replaceChildren(fragment);
+  if (elements.filterCatalogStatus) {
+    elements.filterCatalogStatus.textContent = `${presets.length} de ${state.lutPresets.length}`;
+  }
+}
+
+async function loadLutPreset(preset, trigger = null) {
+  if (!preset) return;
+  trigger?.classList.add("loading");
+  trigger && (trigger.disabled = true);
+  try {
+    const response = await fetch(encodeURI(preset.path));
+    if (!response.ok) throw new Error("Não foi possível baixar este filtro.");
+    const fileName = decodeURIComponent(preset.path.split("/").at(-1));
+    const lut = parseCubeLut(await response.text(), fileName);
+    lut.name = preset.name;
+    state.lut = lut;
+    state.activeLutPresetId = preset.id;
+    state.lutPreviewRenderer = null;
+    state.lutExportRenderer = null;
+    updateLutControls();
+    drawLutPreview();
+    saveLocalProject();
+    showToast(`Filtro ${preset.name} aplicado.`);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Não foi possível aplicar este filtro.");
+  } finally {
+    trigger?.classList.remove("loading");
+    if (trigger) trigger.disabled = false;
+  }
+}
+
+async function loadFilterCatalog() {
+  if (!elements.filterPresetList) return;
+  try {
+    const response = await fetch("/filters/catalog.json");
+    if (!response.ok) throw new Error("Catálogo de filtros indisponível.");
+    state.lutPresets = await response.json();
+    const collections = [...new Set(state.lutPresets.map((preset) => preset.collection))];
+    collections.forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      elements.filterCollectionSelect.append(option);
+    });
+    renderFilterPresets();
+    const savedPreset = state.lutPresets.find((preset) => preset.id === state.activeLutPresetId);
+    if (savedPreset) await loadLutPreset(savedPreset);
+  } catch (error) {
+    console.error(error);
+    elements.filterCatalogStatus.textContent = "Indisponível";
+    elements.filterPresetList.innerHTML = '<p class="filter-preset-empty">Não foi possível abrir os filtros.</p>';
+  }
 }
 
 function easeOutBack(value) {
@@ -2746,6 +2877,11 @@ function visualTrackContentEnd(trackId) {
   return clips.reduce((maximum, clip) => Math.max(maximum, mediaContentEnd(clip)), 0);
 }
 
+function imageCanExtendTrack(clip) {
+  if (clip?.type !== "image") return false;
+  return clipEffectiveEnd(clip) >= visualTrackContentEnd(clip.trackId || "base") - 0.03;
+}
+
 function cleanupEmptyVideoTracks() {
   const usedTracks = new Set([...state.overlayVideoClips, ...state.imageClips]
     .map((clip) => clip.trackId)
@@ -2855,8 +2991,16 @@ function cleanupEmptyAudioTracks() {
   state.audioTrackOrder = ["audio-base", ...state.audioTrackOrder.slice(1).filter((id) => usedTracks.has(id))];
 }
 
+function fileIsVideo(file) {
+  return Boolean(file && (file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm)$/i.test(file.name)));
+}
+
+function fileCanProvideAudio(file) {
+  return Boolean(file && (file.type.startsWith("audio/") || fileIsVideo(file)));
+}
+
 function audioFilesFromTransfer(dataTransfer) {
-  return Array.from(dataTransfer?.files || []).filter((file) => file.type.startsWith("audio/"));
+  return Array.from(dataTransfer?.files || []).filter(fileCanProvideAudio);
 }
 
 function renderAudioTrackStructure() {
@@ -2900,7 +3044,7 @@ function renderAudioTrackStructure() {
     label.append(
       `A${trackNumber}`,
       createTrackVisibilityButton("audio", trackId, `A${trackNumber}`),
-      createTrackAddButton(`Adicionar áudio à faixa A${trackNumber}`, () => {
+      createTrackAddButton(`Adicionar áudio ou extrair vídeo na faixa A${trackNumber}`, () => {
         state.pendingAudioTrackId = trackId;
         elements.audioTrackInput.click();
       }),
@@ -3074,6 +3218,7 @@ function attachClipTrimHandles(block, clip, type, duration, segment = null) {
         initialDuration: Number(clip.duration) || clip.end - clip.start,
         initialSourceOffset: Number(clip.sourceOffset) || 0,
         initialSourceSpan: clipSourceSpan(clip),
+        canExtendTimeline: imageCanExtendTrack(clip),
       };
       block.classList.add("trimming");
       handle.setPointerCapture?.(event.pointerId);
@@ -3097,7 +3242,12 @@ function attachClipTrimHandles(block, clip, type, duration, segment = null) {
         }
       } else if (type === "image") {
         if (edge === "start") clip.start = clamp(trim.initialStart + delta, 0, trim.initialEnd - minimumLength);
-        else clip.end = clamp(trim.initialEnd + delta, trim.initialStart + minimumLength, duration);
+        else {
+          const maximumEnd = trim.canExtendTimeline
+            ? Math.max(duration, trim.initialEnd + Math.max(0, delta))
+            : duration;
+          clip.end = clamp(trim.initialEnd + delta, trim.initialStart + minimumLength, maximumEnd);
+        }
       } else if (["video", "audio"].includes(type)) {
         if (edge === "start") {
           const minimumStart = Math.max(0, trim.initialStart - trim.initialSourceOffset / rate);
@@ -3906,6 +4056,7 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
   }
   cleanupEmptyVideoTracks();
   renderMediaTracks();
+  updatePlayer();
   saveLocalProject();
   if (files.length) showToast(`${files.length} ${files.length === 1 ? "vídeo adicionado" : "vídeos adicionados"} à faixa.`);
   return cursor;
@@ -3935,6 +4086,7 @@ async function addImageClips(files, requestedTrackId = null, requestedStart = nu
   }
   cleanupEmptyVideoTracks();
   renderMediaTracks();
+  updatePlayer();
   saveLocalProject();
   if (files.length) showToast(`${files.length} ${files.length === 1 ? "imagem adicionada" : "imagens adicionadas"} à faixa.`);
   return cursor;
@@ -3959,7 +4111,14 @@ function waitForAudioMetadata(audio) {
 
 async function addAudioClips(files, requestedTrackId = "audio-base", requestedStart = projectCurrentTime()) {
   const trackId = ensureAudioTrack(requestedTrackId);
+  let addedCount = 0;
+  let extractedCount = 0;
   for (const file of files) {
+    const extractingVideo = fileIsVideo(file);
+    if (extractingVideo && !(await fileHasAudioTrack(file))) {
+      showToast(`${file.name} não possui uma faixa de áudio.`);
+      continue;
+    }
     const url = URL.createObjectURL(file);
     const audioElement = new Audio(url);
     audioElement.preload = "metadata";
@@ -3972,20 +4131,29 @@ async function addAudioClips(files, requestedTrackId = "audio-base", requestedSt
         ? Math.min(fallbackStart, Math.max(0, videoDuration - 0.1))
         : fallbackStart;
       const clip = {
-        id: crypto.randomUUID(), type: "audio", name: file.name, file, url, audioElement,
+        id: crypto.randomUUID(), type: "audio", name: extractingVideo ? `Áudio · ${file.name}` : file.name, file, url, audioElement,
         trackId, start, end: Math.min(videoDuration, start + audioElement.duration), volume: 1, playbackRate: 1,
+        importedFromVideo: extractingVideo,
       };
       clip.sourceSpan = clip.end - clip.start;
       state.audioClips.push(clip);
       state.selectedMediaClipId = clip.id;
+      addedCount += 1;
+      if (extractingVideo) extractedCount += 1;
     } catch (error) {
       URL.revokeObjectURL(url);
       showToast(error.message);
     }
   }
   renderMediaTracks();
+  updatePlayer();
   saveLocalProject();
-  if (files.length) showToast(`${files.length} ${files.length === 1 ? "áudio adicionado" : "áudios adicionados"}.`);
+  if (addedCount) {
+    const detail = extractedCount
+      ? `${extractedCount} ${extractedCount === 1 ? "vídeo convertido em áudio" : "vídeos convertidos em áudio"}`
+      : `${addedCount} ${addedCount === 1 ? "áudio adicionado" : "áudios adicionados"}`;
+    showToast(`${detail}.`);
+  }
 }
 
 async function fileHasAudioTrack(file) {
@@ -6240,6 +6408,7 @@ function saveLocalProject() {
     videoAdjustments: state.videoAdjustments,
     exportFrameRate: elements.exportFrameRate.value,
     lutIntensity: elements.lutIntensity.value,
+    lutPresetId: state.activeLutPresetId,
     cuts: state.cuts,
     magneticCuts: elements.magneticCuts.checked,
     selectedVideoTransition: state.selectedVideoTransition,
@@ -6283,6 +6452,7 @@ function restoreLocalProject() {
       : "30";
     elements.lutIntensity.value = data.lutIntensity || "100";
     elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
+    state.activeLutPresetId = data.lutPresetId || null;
     elements.magneticCuts.checked = data.magneticCuts !== false;
     state.selectedVideoTransition = data.selectedVideoTransition || "fade";
     elements.linkTiming.checked = data.linkedTiming !== false;
@@ -6355,6 +6525,9 @@ function restoreLocalProject() {
 
 elements.videoInput.addEventListener("change", (event) => loadVideo(event.target.files[0]));
 elements.lutInput.addEventListener("change", (event) => loadLut(event.target.files[0]));
+elements.filterSearchInput.addEventListener("input", renderFilterPresets);
+elements.filterCollectionSelect.addEventListener("change", renderFilterPresets);
+elements.clearFilterPresetButton.addEventListener("click", () => removeLut());
 elements.lutIntensity.addEventListener("input", () => {
   elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
   drawLutPreview();
@@ -6735,11 +6908,16 @@ function updateSelectedClipTiming() {
   if (clip.type === "sequence") return;
   const duration = projectDuration() || Infinity;
   const requestedStart = clamp(Number(elements.mediaClipStart.value) || 0, 0, duration);
-  const requestedEnd = clamp(Number(elements.mediaClipEnd.value) || requestedStart + 0.1, 0, duration);
+  const requestedEndValue = Number(elements.mediaClipEnd.value) || requestedStart + 0.1;
+  const requestedEnd = imageCanExtendTrack(clip)
+    ? Math.max(0, requestedEndValue)
+    : clamp(requestedEndValue, 0, duration);
   clip.start = Math.min(requestedStart, Math.max(0, duration - 0.1));
   const mediaDuration = clip.type === "audio" ? clip.audioElement?.duration : clip.mediaElement?.duration;
   const sourceLimit = Number.isFinite(mediaDuration) ? clip.start + mediaDuration - (clip.sourceOffset || 0) : Infinity;
-  const endLimit = Math.min(duration, sourceLimit);
+  const endLimit = clip.type === "image" && imageCanExtendTrack(clip)
+    ? Infinity
+    : Math.min(duration, sourceLimit);
   clip.end = Math.min(endLimit, Math.max(clip.start + 0.1, requestedEnd));
   clip.sourceSpan = (clip.end - clip.start) * clipPlaybackRate(clip);
   renderMediaTracks();
@@ -7032,6 +7210,7 @@ applyCaptionPositionStyles();
 elements.captionOverlay.style.fontFamily = captionFontFamily();
 applyCaptionColors();
 updateLutControls();
+loadFilterCatalog();
 renderCues();
 updateScriptState();
 updateMobileTabFromScroll();
@@ -7045,7 +7224,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=77", { updateViaCache: "none" })
+      .register("service-worker.js?v=79", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
