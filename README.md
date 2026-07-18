@@ -1,84 +1,114 @@
 # Flui Creative Studio
 
-Protótipo de editor de legendas guiado por roteiro, preparado para hospedagem no Netlify.
+Editor de vídeo multifaixa com legendas sincronizadas, pensado para criação rápida no desktop e no iPhone. O processamento acontece localmente no navegador e o projeto pode ser publicado como PWA no Netlify.
 
-## Recursos
+## O que o editor faz
 
-- vídeo processado localmente no navegador;
-- sincronização inicial baseada no roteiro correto;
-- geração opcional de legendas automáticas pelo áudio do vídeo, sem alterar o fluxo guiado por roteiro;
-- revisão de texto e tempos de cada trecho;
-- tempos encadeados para ajustar automaticamente os trechos seguintes;
-- posição livre da legenda por arraste na prévia;
-- sincronização rápida do próximo trecho no tempo atual do vídeo;
-- extensão rápida da legenda anterior até o tempo atual do vídeo;
-- cinco estilos de legenda em um toque: Limpa, Impacto, Karaokê, Dupla e Faixa;
-- legenda por frase, palavra isolada ou karaokê com a palavra atual destacada;
-- 12 opções de tipografia, RGB livre para texto, destaque e fundo, contorno e sombra;
-- animações Pop, Quicar, Digitar, Revelar, Deslizar e transições de saída;
-- ajuste visual da legenda;
-- cortes marcados em dois toques, com opção para desfazer o último corte;
-- cortes vinculados à faixa selecionada, com vazios independentes em V1, V2, V3, imagens e áudios;
-- encaixe magnético ao aproximar as partes de um corte e indicador contextual para escolher a transição daquela junção;
-- transições de corte arrastáveis e encaixe magnético nos pontos de corte;
-- importação de LUTs 3D no formato `.cube`, com prévia e controle de intensidade;
-- correções de exposição, brilho, contraste, saturação, brilho da cor, temperatura, calor, matiz, realces, sombras e ponto preto;
-- trilhas visuais unificadas para vídeos e imagens, além de trilhas independentes de áudio, com criação automática ao arrastar entre faixas e visibilidade individual;
-- vídeos e imagens sobrepostos redimensionáveis pela alça de canto ou por gesto de pinça no iPhone;
-- seleção da camada exibida em primeiro plano na prévia, sem perder as demais camadas da composição;
-- blocos arrastáveis com duração, posição, tamanho, opacidade, entrada e volume;
-- timeline multifaixa unificada para cortes, camadas de vídeo, imagens, áudio e legendas;
-- botões `+` em cada faixa para importar diretamente no destino certo;
-- união de vários vídeos em V1 e criação automática de V2, V3 e novas camadas ao soltar um clipe nas divisórias;
-- composição automática quando vídeos em camadas diferentes ocupam o mesmo momento da timeline;
-- volume independente de 0% a 200% para cada vídeo e para cada faixa de áudio;
-- velocidade independente de 0,25x a 5,00x para vídeos e áudios;
-- áudio extraído vinculado à velocidade do vídeo de origem, com botão para desvincular e editar separadamente;
-- alças no início e no final de vídeos, imagens e áudios para aparagem não destrutiva e recuperação do trecho original;
-- fade in e fade out independentes, em segundos, para cada trecho de vídeo ou áudio;
-- corte de áudio em dois toques, com vazio independente, união magnética, transição seca ou fundida e desfazer;
-- divisão em um toque em qualquer clipe de V1, V2, V3, A1, A2 e demais faixas, criando partes independentes;
-- cada parte dividida pode ser movida, duplicada, excluída e receber volume ou fades próprios;
-- exportação no iPhone com fades de áudio preservados, cortes sincronizados e menor uso de memória em MP4;
-- extração do áudio de qualquer vídeo para uma faixa independente, silenciando o original para evitar duplicação;
-- imagens posicionadas diretamente por arraste sobre o vídeo;
-- aplicação do LUT também no vídeo exportado em 720p, 1080p ou 4K;
-- exportação selecionável em 24, 30 ou 60 quadros por segundo;
-- exportação otimizada nos navegadores compatíveis, com codificação quadro a quadro e timestamps constantes;
-- exportação do vídeo com legendas incorporadas em 720p, 1080p ou 4K;
-- exportação opcional em SRT, VTT e JSON.
+### Vídeo, imagem e timeline
 
-A renderização do vídeo acontece no navegador e preserva o áudio original. O formato final será MP4 quando o navegador oferecer suporte; nos demais casos, WebM.
+- Une vídeos e imagens em uma trilha visual unificada.
+- Permite várias trilhas de vídeo/imagem e várias trilhas de áudio.
+- Adiciona arquivos diretamente na trilha escolhida pelo botão `+`.
+- Aceita vídeo, imagem, áudio e vídeo com áudio extraído para uma trilha de áudio.
+- Permite mover, duplicar, dividir, excluir e selecionar cada clipe individualmente.
+- Exibe e oculta cada trilha separadamente.
+- Cria sobreposição quando dois clipes ocupam o mesmo intervalo da timeline.
+- Usa encaixe magnético para aproximar clipes e escolher transições em uma junção específica.
+- Oferece alças de início e fim para aparagem não destrutiva de vídeo, imagem e áudio.
+- Ajusta automaticamente a duração da trilha quando uma imagem é estendida ou encurtada no final.
+- Permite volume de 0% a 200%, velocidade de 0,25x a 5x e fade in/fade out por clipe.
+- Mantém áudio extraído vinculado à velocidade do vídeo de origem, com opção de desvincular.
+- Permite narração pelo microfone do dispositivo e sincronização opcional de legendas com a narração.
 
-Os arquivos de vídeo, imagem, áudio e LUT permanecem somente no dispositivo. Como o navegador não pode reabrir arquivos locais sozinho, eles precisam ser selecionados novamente depois de recarregar a página; os demais ajustes do projeto continuam salvos localmente.
+### Legendas
 
-No protótipo, a legenda dinâmica distribui as palavras dentro do tempo de cada trecho. Uma sincronização palavra por palavra baseada diretamente no áudio poderá ser acrescentada ao modelo de transcrição personalizado em uma próxima etapa.
+- Mantém o roteiro e a sincronização existentes sem depender do reconhecimento automático.
+- Oferece geração opcional de legenda automática pelo áudio do vídeo.
+- Permite revisar texto, início, fim e encadeamento dos trechos.
+- Inclui os modos Frase, Palavra e Karaokê.
+- Permite posicionar a composição inteira e reposicionar cada parte da legenda separadamente.
+- Oferece estilos editoriais com hierarquia entre texto normal e palavra de impacto.
+- Aplica entrada e saída suaves, escala, deslocamento curto e destaque cinético sem alterar os tempos originais.
+- Permite escolher fonte, tamanho, alinhamento, cor do texto, cor da palavra de destaque, fundo, sombra, contorno e espaçamento.
+- Usa composições independentes para vídeos verticais e horizontais, com áreas seguras para redes sociais.
+- Exibe guias de alinhamento para facilitar o posicionamento magnético no centro do vídeo.
+- Permite excluir somente a legenda selecionada pelo teclado `Delete` no computador ou pelo botão no iPhone.
 
-Os LUTs são processados localmente com aceleração gráfica. O arquivo precisa ser uma LUT 3D `.cube`, com tamanho entre 2 e 64. Por segurança do navegador, o arquivo LUT precisa ser selecionado novamente depois que a página for recarregada.
+As famílias tipográficas incluem opções clássicas, modernas, editoriais, condensadas, monoespaçadas e fontes com personalidade, usando fontes instaladas no sistema quando disponíveis.
 
-O leitor respeita a ordem oficial red-fastest do formato IRIDAS/Resolve, reorganiza os dados em blocos próprios para interpolação gráfica e reconhece tanto `DOMAIN_MIN`/`DOMAIN_MAX` quanto `LUT_3D_INPUT_RANGE`.
+### Grade e composição
 
-Nos navegadores com suporte a WebCodecs, a exportação usa um caminho quadro a quadro: cada imagem recebe um timestamp constante na taxa selecionada, o áudio é remontado ao redor dos cortes e o MP4 é codificado fora do ritmo da prévia. Isso evita que oscilações de desempenho virem quadros repetidos no arquivo. Em aparelhos mais antigos, o editor mantém automaticamente o exportador em tempo real como modo de compatibilidade.
+- Oferece grade livre ou presets para 2, 3 e 4 vídeos simultâneos.
+- Inclui proporções `Original`, `9:16`, `16:9`, `1:1` e `4:5`, refletidas na prévia e na exportação.
+- Permite reposicionar cada vídeo dentro da sua célula da grade arrastando a célula ou usando as setas do teclado.
+- Mantém o enquadramento escolhido na prévia e no arquivo exportado.
+- Permite redimensionar vídeos sobrepostos pela alça de canto ou por gesto de pinça no iPhone.
+- Preserva as camadas e o áudio correspondente quando vídeos são colocados em trilhas diferentes.
 
-A exportação otimizada usa Mediabunny 1.48.1, distribuído sob MPL-2.0 e incluído localmente em `vendor/`, para continuar disponível no modo PWA offline.
+### Cor e filtros
 
-O site também funciona como um Progressive Web App (PWA), com instalação na tela inicial do iPhone e interface disponível offline após o primeiro acesso.
+- Inclui filtros com miniaturas para comparação rápida.
+- Organiza os filtros por coleções e permite buscar pelo nome.
+- Permite importar LUTs 3D `.cube`, visualizar o resultado e ajustar a intensidade.
+- Inclui ajustes de exposição, brilho, contraste, saturação, brilho da cor, temperatura, calor, matiz, realces, sombras e ponto preto.
+- Oferece botão para redefinir os ajustes de cor.
+- Aplica filtros, LUTs e ajustes também no vídeo exportado.
 
-A legenda automática usa Whisper Base quantizado localmente e baixa o modelo somente na primeira utilização. O vídeo não é enviado para um servidor; o fluxo por roteiro continua independente e disponível sem esse recurso opcional.
+### Transições e cortes
 
-No iPhone, o editor ocupa uma única tela sem rolagem da página. Prévia, timeline e dock de ferramentas permanecem visíveis; somente a faixa ou o painel ativo desliza internamente quando necessário.
+- Permite corte por intervalo e divisão no cursor em qualquer trilha.
+- Oferece transições Seco, Fundido, Flash e Zoom.
+- Permite escolher a transição diretamente no indicador da junção.
+- Mantém cortes e vazios independentes por trilha, sem criar conteúdo duplicado ao escolher uma transição.
+- Permite desfazer cortes e recuperar trechos aparados.
+
+## Exportação
+
+O exportador oferece:
+
+- 720p, 1080p e até 4K, quando o dispositivo e o navegador suportarem;
+- 24, 30 ou 60 FPS;
+- proporções Original, 9:16, 16:9, 1:1 e 4:5;
+- SDR;
+- HDR com alvo HLG, usando HEVC Main 10 e sinalização BT.2020 quando disponível;
+- vídeo com legendas incorporadas;
+- formatos SRT, VTT e JSON para exportar as legendas separadamente.
+
+Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar quadro a quadro com timestamps constantes. O áudio é remontado offline a partir das trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém os quadros e o áudio sincronizados mesmo com múltiplos vídeos na grade.
+
+Se o navegador não oferecer os recursos necessários, o editor usa um caminho de compatibilidade em tempo real e informa o estado no modal de exportação. HDR depende de suporte do navegador, do dispositivo e da tela; em aparelhos sem suporte, a exportação volta para SDR para preservar a compatibilidade.
+
+## Privacidade e armazenamento
+
+- Vídeos, imagens, áudios e LUTs ficam no dispositivo e não são enviados para um servidor.
+- Os ajustes do projeto são salvos localmente.
+- Por segurança do navegador, arquivos locais precisam ser selecionados novamente após recarregar a página.
+- A legenda automática baixa o modelo localmente apenas na primeira utilização; esse recurso é opcional e não altera o sistema de roteiro.
+
+## PWA e iPhone
+
+O editor funciona como Progressive Web App. No iPhone, a interface mantém prévia, controles, timeline, trilhas e painel de ferramentas em uma única tela, usando rolagem interna somente onde necessário. Também oferece prévia em tela cheia e controles de projeto para proporção, resolução, FPS e HDR.
 
 ## Executar localmente
 
-Sirva esta pasta com qualquer servidor de arquivos estáticos. Por exemplo:
+Sirva a pasta com qualquer servidor de arquivos estáticos:
 
 ```sh
 python3 -m http.server 4173
 ```
 
-Abra `http://localhost:4173`.
+Abra `http://localhost:4173` no navegador.
 
-## Netlify
+## Publicar no Netlify
 
-O arquivo `netlify.toml` publica a raiz do projeto sem etapa de compilação.
-# voz-em-legenda
+O arquivo `netlify.toml` publica a raiz do projeto sem etapa de compilação. O `service-worker.js` mantém os arquivos principais e o runtime de exportação disponíveis para uso como PWA, inclusive após o primeiro carregamento.
+
+## Estrutura principal
+
+- `index.html`: estrutura do editor e controles.
+- `styles.css`: layout desktop, responsividade e interface do iPhone.
+- `app.js`: estado do projeto, timeline, prévia, legendas, filtros, áudio e exportação.
+- `filters/`: catálogo e arquivos de filtros/LUT.
+- `vendor/`: dependências locais, incluindo Mediabunny para exportação.
+- `manifest.webmanifest`: configuração de instalação do PWA.
+- `service-worker.js`: cache offline e atualização da versão publicada.
