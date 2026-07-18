@@ -81,3 +81,4 @@ Abra `http://localhost:4173`.
 ## Netlify
 
 O arquivo `netlify.toml` publica a raiz do projeto sem etapa de compilação.
+# voz-em-legenda
