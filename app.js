@@ -5997,11 +5997,10 @@ function drawCaptionFrame(context, width, height, time) {
 }
 
 function supportedRecordingType() {
-  const hdrTypes = selectedExportColorMode() === "hdr"
-    ? ["video/mp4;codecs=hvc1.2.4.L120.B0,mp4a.40.2", "video/mp4;codecs=hvc1", "video/mp4;codecs=hev1"]
-    : [];
+  // MediaRecorder encodes in real time. HEVC regularly falls behind on iPhone,
+  // producing a valid file with visibly missing frames. HDR/HEVC is handled by
+  // the deterministic WebCodecs exporter instead.
   const types = [
-    ...hdrTypes,
     "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
     "video/mp4",
     "video/webm;codecs=vp9,opus",
@@ -6213,8 +6212,7 @@ function selectedExportColorMode() {
   return elements.exportColorMode?.value === "hdr" ? "hdr" : "sdr";
 }
 
-function prepareExportCanvas(width, height) {
-  const colorMode = selectedExportColorMode();
+function prepareExportCanvas(width, height, colorMode = selectedExportColorMode()) {
   let canvas = elements.renderCanvas;
   if (canvas.dataset.colorMode && canvas.dataset.colorMode !== colorMode) {
     const replacement = canvas.cloneNode(false);
@@ -6228,6 +6226,7 @@ function prepareExportCanvas(width, height) {
     context = canvas.getContext("2d", {
       alpha: false,
       colorSpace: colorMode === "hdr" ? "display-p3" : "srgb",
+      colorType: colorMode === "hdr" ? "float16" : "unorm8",
     });
   } catch {
     context = canvas.getContext("2d", { alpha: false });
@@ -6237,6 +6236,43 @@ function prepareExportCanvas(width, height) {
   const actualColorSpace = context?.getContextAttributes?.().colorSpace;
   state.hdrCanvasSupported = colorMode !== "hdr" || actualColorSpace === "display-p3";
   return { canvas, context };
+}
+
+async function optimizedVideoEncoding(mediabunny, width, height, bitrate, frameRate) {
+  const common = {
+    width,
+    height,
+    bitrate,
+    framerate: frameRate,
+    hardwareAcceleration: "prefer-hardware",
+    latencyMode: "quality",
+  };
+
+  if (selectedExportColorMode() === "hdr") {
+    const preferredLevel = width >= 3840
+      ? (frameRate > 30 ? "L153" : "L150")
+      : (frameRate > 30 ? "L123" : "L120");
+    const hevcOptions = [...new Set([preferredLevel, "L153", "L150", "L123", "L120"])]
+      .map((level) => ({ ...common, fullCodecString: `hvc1.2.4.${level}.B0` }));
+    for (const options of hevcOptions) {
+      try {
+        if (await mediabunny.canEncodeVideo("hevc", options)) {
+          return { codec: "hevc", options, hdr: true };
+        }
+      } catch {
+        // Main 10 availability varies by iPhone generation and selected resolution.
+      }
+    }
+  }
+
+  try {
+    if (await mediabunny.canEncodeVideo("avc", common)) {
+      return { codec: "avc", options: common, hdr: false };
+    }
+  } catch {
+    // The caller will use the compatible real-time exporter.
+  }
+  return null;
 }
 
 function exportVideoBitrate(preset, frameRate) {
@@ -6341,7 +6377,6 @@ function setExportProgress(progress, width, height, frameRate, currentTime, dura
 async function renderCaptionedVideoOptimized(preset) {
   if (
     !state.videoFile
-    || selectedExportColorMode() === "hdr"
     || state.videoGridMode > 1
     || state.sequenceClips.length > 1
     || state.overlayVideoClips.some(clipTrackIsVisible)
@@ -6372,11 +6407,12 @@ async function renderCaptionedVideoOptimized(preset) {
     return false;
   }
 
-  const canEncodeVideo = await mediabunny.canEncodeVideo("avc", { width, height, bitrate: videoBitrate });
-  if (!canEncodeVideo) {
+  const videoEncoding = await optimizedVideoEncoding(mediabunny, width, height, videoBitrate, frameRate);
+  if (!videoEncoding) {
     input.dispose();
     return false;
   }
+  const { canvas, context } = prepareExportCanvas(width, height, videoEncoding.hdr ? "hdr" : "sdr");
 
   let audioMode = null;
   let audioSettings = null;
@@ -6441,7 +6477,6 @@ async function renderCaptionedVideoOptimized(preset) {
     return true;
   }
 
-  const { canvas, context } = prepareExportCanvas(width, height);
   state.exportCanceled = false;
   state.exporting = true;
   state.isCutSeeking = false;
@@ -6451,7 +6486,11 @@ async function renderCaptionedVideoOptimized(preset) {
   elements.exportTitle.textContent = "Renderizando vídeo";
   elements.saveExportButton.hidden = true;
   elements.cancelExportButton.textContent = "Cancelar";
-  elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · preparando exportação otimizada`;
+  const exportColorDetail = videoEncoding.hdr && state.hdrCanvasSupported ? "HDR P3 / HEVC" : "SDR / AVC";
+  if (selectedExportColorMode() === "hdr" && !videoEncoding.hdr) {
+    showToast("HDR Main 10 não está disponível neste navegador; exportando em SDR sem perder quadros.");
+  }
+  elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${exportColorDetail} · preparando quadros`;
   elements.exportProgress.style.width = "0%";
   elements.exportPercent.textContent = "0%";
 
@@ -6475,8 +6514,8 @@ async function renderCaptionedVideoOptimized(preset) {
     state.optimizedOutput = output;
 
     const videoSource = new mediabunny.CanvasSource(canvas, {
-      codec: "avc",
-      bitrate: videoBitrate,
+      codec: videoEncoding.codec,
+      ...videoEncoding.options,
       keyFrameInterval: 2,
     });
     output.addVideoTrack(videoSource, { frameRate });
@@ -6534,7 +6573,15 @@ async function renderCaptionedVideoOptimized(preset) {
 
         frameIndex += 1;
         if (frameIndex === frameCount || frameIndex % Math.max(1, Math.round(frameRate / 4)) === 0) {
-          setExportProgress(frameIndex / frameCount, width, height, frameRate, Math.min(editedDuration, outputTime), editedDuration);
+          setExportProgress(
+            frameIndex / frameCount,
+            width,
+            height,
+            frameRate,
+            Math.min(editedDuration, outputTime),
+            editedDuration,
+            `${exportColorDetail} · quadros precisos`,
+          );
           await new Promise((resolve) => requestAnimationFrame(resolve));
         }
       }
@@ -6621,7 +6668,7 @@ async function renderCaptionedVideoOptimized(preset) {
     const blob = new Blob([target.buffer], { type: mimeType || "video/mp4" });
     state.pendingExport = { blob, extension: "mp4", mimeType: mimeType || "video/mp4" };
     elements.exportTitle.textContent = "Vídeo pronto";
-    elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · quadros sincronizados`;
+    elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${exportColorDetail} · quadros sincronizados`;
     elements.exportProgress.style.width = "100%";
     elements.exportPercent.textContent = "100%";
     elements.saveExportButton.hidden = false;
@@ -6662,7 +6709,9 @@ async function renderCaptionedVideoRealtime(preset) {
   const { width, height } = outputDimensions(preset);
   const frameRate = selectedExportFrameRate();
   const colorMode = selectedExportColorMode();
-  const { canvas, context } = prepareExportCanvas(width, height);
+  // The real-time fallback deliberately uses SDR/AVC. HEVC MediaRecorder drops
+  // frames on iPhone under load; supported HDR projects use the path above.
+  const { canvas, context } = prepareExportCanvas(width, height, "sdr");
 
   const previousTime = projectCurrentTime();
   const previousMuted = elements.video.muted;
@@ -7829,7 +7878,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=83", { updateViaCache: "none" })
+      .register("service-worker.js?v=86", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });

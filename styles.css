@@ -5563,6 +5563,7 @@ body { padding: 10px; }
 }
 
 /* Voice-over recording controls v82 */
+.media-track-row,
 .base-audio-track-row,
 .dynamic-audio-track-row {
   grid-template-columns: 124px minmax(512px, 1fr);
@@ -5574,6 +5575,7 @@ body { padding: 10px; }
 
 .base-audio-track-row > span,
 .dynamic-audio-track-row > span {
+  width: 124px;
   grid-template-columns: minmax(18px, 1fr) repeat(4, 22px);
   gap: 4px;
 }
@@ -5623,9 +5625,15 @@ body { padding: 10px; }
 }
 
 @media (max-width: 760px) {
+  .media-track-row,
   .base-audio-track-row,
   .dynamic-audio-track-row {
+    min-width: 724px;
     grid-template-columns: 112px minmax(600px, 1fr);
+  }
+
+  .media-track-row > span {
+    width: 112px;
   }
 
   .base-audio-track-row > span,
