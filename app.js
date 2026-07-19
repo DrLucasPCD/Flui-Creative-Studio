@@ -3291,7 +3291,7 @@ function renderGridInteractionHandles(grid, slots) {
       control.addEventListener("pointercancel", finish);
       control.addEventListener("keydown", (event) => {
         const current = activeVideoGrid()?.participants.find((candidate) => candidate.key === control.dataset.gridKey);
-        if (!current || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+        if (!event.altKey || !current || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
         event.preventDefault();
         const focus = gridFocusForClip(current.clip);
         current.clip.gridFocusX = clamp(focus.x + (event.key === "ArrowLeft" ? -3 : event.key === "ArrowRight" ? 3 : 0), 0, 100);
@@ -3997,6 +3997,63 @@ function timelineTimeAtClientX(clientX) {
   return clamp((clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration();
 }
 
+let pendingPlayheadSeek = null;
+let playheadSeekInFlight = false;
+
+async function flushPlayheadSeek() {
+  if (playheadSeekInFlight) return;
+  playheadSeekInFlight = true;
+  while (pendingPlayheadSeek !== null) {
+    const target = pendingPlayheadSeek;
+    pendingPlayheadSeek = null;
+    await seekProjectTime(target, false).catch(() => {});
+  }
+  playheadSeekInFlight = false;
+}
+
+function queuePlayheadSeek(time) {
+  pendingPlayheadSeek = clamp(time, 0, projectDuration());
+  flushPlayheadSeek();
+}
+
+function attachDraggablePlayhead(container, selector, trackForHandle) {
+  container.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest(selector);
+    if (!handle || !projectDuration()) return;
+    const track = trackForHandle(handle);
+    if (!track) return;
+    event.preventDefault();
+    event.stopPropagation();
+    elements.video.pause();
+    state.draggingTimelinePlayhead = { pointerId: event.pointerId, handle, track };
+    handle.classList.add("dragging");
+    handle.setPointerCapture?.(event.pointerId);
+    const bounds = track.getBoundingClientRect();
+    queuePlayheadSeek(((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration());
+  });
+  container.addEventListener("pointermove", (event) => {
+    const drag = state.draggingTimelinePlayhead;
+    if (!drag || drag.pointerId !== event.pointerId || !container.contains(drag.handle)) return;
+    event.preventDefault();
+    const bounds = drag.track.getBoundingClientRect();
+    queuePlayheadSeek(((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration());
+  });
+  const finish = (event) => {
+    const drag = state.draggingTimelinePlayhead;
+    if (!drag || drag.pointerId !== event.pointerId || !container.contains(drag.handle)) return;
+    const bounds = drag.track.getBoundingClientRect();
+    queuePlayheadSeek(((event.clientX - bounds.left) / Math.max(1, bounds.width)) * projectDuration());
+    drag.handle.classList.remove("dragging");
+    drag.handle.releasePointerCapture?.(event.pointerId);
+    state.draggingTimelinePlayhead = null;
+  };
+  container.addEventListener("pointerup", finish);
+  container.addEventListener("pointercancel", finish);
+}
+
+attachDraggablePlayhead(elements.cutTrack, "#cutPlayhead", () => elements.cutTrack);
+attachDraggablePlayhead(elements.mediaTimeline, "[data-media-playhead]", (handle) => handle.parentElement);
+
 function sourceDurationForClip(clip) {
   if (clip.type === "sequence") return Number(clip.sourceDuration) || Number(clip.file?.duration) || Infinity;
   if (clip.type === "video") return Number(clip.mediaElement?.duration) || Infinity;
@@ -4393,11 +4450,7 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
   if (clip.thumbnail) block.style.backgroundImage = `url("${clip.thumbnail}")`;
   block.title = `${clip.name} · volume ${Math.round((clip.volume ?? 1) * 100)}%`;
   const selectClip = () => {
-    state.selectedMediaClipId = clip.id;
-    state.selectedMediaSegmentKey = segmentKey;
-    activateToolTab("media");
-    seekProjectTime(segment.start).catch(() => {});
-    renderMediaTracks();
+    selectMediaClip(clip.id, true, segmentKey);
   };
   block.addEventListener("pointerdown", (event) => {
     if (event.button !== undefined && event.button !== 0) return;
@@ -4744,10 +4797,6 @@ function renderMediaTracks() {
 function selectMediaClip(id, openMediaTab = false, segmentKey = null) {
   state.selectedMediaClipId = id;
   const clip = allMediaClips().find((item) => item.id === id);
-  const currentTime = projectCurrentTime();
-  const shouldSeek = Boolean(openMediaTab && clip && (
-    currentTime < clip.start - 0.01 || currentTime >= clipEffectiveEnd(clip) - 0.01
-  ));
   const fallbackSegment = clip ? editableSegmentsForClip(clip)
     .find((item) => projectCurrentTime() >= item.start && projectCurrentTime() < item.end) : null;
   state.selectedMediaSegmentKey = segmentKey || (fallbackSegment ? mediaSegmentKey(fallbackSegment) : null);
@@ -4758,7 +4807,6 @@ function selectMediaClip(id, openMediaTab = false, segmentKey = null) {
   updateLutControls();
   drawLutPreview();
   renderMediaTracks();
-  if (shouldSeek) seekProjectTime(Math.min(clipEffectiveEnd(clip) - 0.001, clip.start + 0.02), false).catch(() => {});
 }
 
 function updateMediaInspector() {
@@ -7961,7 +8009,7 @@ elements.captionOverlay.addEventListener("keydown", (event) => {
     ArrowUp: [0, -1],
     ArrowDown: [0, 1],
   };
-  if (!directions[event.key]) return;
+  if (!event.altKey || !directions[event.key]) return;
   event.preventDefault();
   const multiplier = event.shiftKey ? 5 : 1;
   const [x, y] = directions[event.key];
@@ -8492,33 +8540,53 @@ window.addEventListener("scroll", () => {
 }, { passive: true });
 window.addEventListener("resize", updateMobileTabFromScroll);
 
-function stepPlayheadByFrame(direction) {
+let playheadStepSeconds = 0.2;
+
+function stepPlayhead(direction) {
   if (!elements.video.src || !projectDuration()) return;
-  const frameRate = selectedExportFrameRate();
-  const currentFrame = direction > 0
-    ? Math.floor(projectCurrentTime() * frameRate + 0.001) + 1
-    : Math.ceil(projectCurrentTime() * frameRate - 0.001) - 1;
-  const target = clamp(currentFrame / frameRate, 0, projectDuration());
+  const target = clamp(projectCurrentTime() + direction * playheadStepSeconds, 0, projectDuration());
   elements.video.pause();
   seekProjectTime(target, false).catch(() => {});
 }
 
+function changePlayheadStep(direction) {
+  playheadStepSeconds = clamp(Math.round((playheadStepSeconds + direction * 0.1) * 10) / 10, 0.1, 5);
+  showToast(`Passo do cursor: ${playheadStepSeconds.toFixed(1).replace(".", ",")} s`);
+}
+
 document.addEventListener("keydown", (event) => {
-  if (event.defaultPrevented) return;
-  const isTyping = event.target.matches("textarea, input, select, [contenteditable='true']");
+  const isTyping = event.target instanceof Element
+    && event.target.matches("textarea, input, select, [contenteditable='true']");
   if (
     window.innerWidth > 760
     && !isTyping
     && !event.altKey
     && !event.ctrlKey
     && !event.metaKey
-    && ["ArrowLeft", "ArrowRight"].includes(event.key)
-    && elements.video.src
+    && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
   ) {
     event.preventDefault();
-    stepPlayheadByFrame(event.key === "ArrowRight" ? 1 : -1);
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      changePlayheadStep(event.key === "ArrowUp" ? 1 : -1);
+    } else if (elements.video.src) {
+      stepPlayhead(event.key === "ArrowRight" ? 1 : -1);
+    }
     return;
   }
+  if (
+    window.innerWidth > 760
+    && !isTyping
+    && !event.repeat
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+    && event.key.toLowerCase() === "s"
+  ) {
+    event.preventDefault();
+    splitSelectedClipAtPlayhead(["sequence", "video"]);
+    return;
+  }
+  if (event.defaultPrevented) return;
   if (!isTyping && ["Delete", "Backspace"].includes(event.key)) {
     if (selectedMediaClip()) {
       event.preventDefault();
@@ -8535,7 +8603,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     togglePlayback();
   }
-});
+}, { capture: true });
 
 let appViewportHeight = 0;
 function updateAppViewportHeight() {

@@ -89,7 +89,7 @@ Se o navegador não oferecer os recursos necessários, o editor usa um caminho d
 
 O editor funciona como Progressive Web App. No iPhone, a interface mantém prévia, controles, timeline, trilhas e painel de ferramentas em uma única tela, usando rolagem interna somente onde necessário. Também oferece prévia em tela cheia e controles de projeto para proporção, resolução e FPS.
 
-No desktop, as setas `←` e `→` movem o cursor da timeline exatamente um quadro por toque, conforme o FPS selecionado para o projeto.
+No desktop, `←/→` move o cursor da timeline pelo passo atual, inicialmente `0,2 s`, e `↑/↓` aumenta ou diminui esse passo em `0,1 s`. No Mac, `Option + seta` reposiciona a legenda ou o vídeo selecionado na grade. Pressione `S` para dividir somente o vídeo selecionado no cursor. O cursor também pode ser arrastado diretamente com mouse ou toque.
 
 ## Executar localmente
 

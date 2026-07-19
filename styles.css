@@ -726,9 +726,45 @@ h2 {
   top: 0;
   bottom: 0;
   left: 0;
+  width: 18px;
+  transform: translateX(-50%);
+  background: transparent;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.cut-playhead::after,
+.media-playhead::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
   width: 2px;
+  transform: translateX(-50%);
   background: #fff;
-  pointer-events: none;
+}
+
+.cut-playhead::before,
+.media-playhead::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  transform: translate(-50%, -1px);
+  background: #fff;
+}
+
+.cut-playhead.dragging::after,
+.cut-playhead.dragging::before,
+.media-playhead.dragging::after,
+.media-playhead.dragging::before {
+  background: var(--teal);
 }
 
 .transition-palette {
@@ -3191,9 +3227,12 @@ body {
   top: 0;
   bottom: 0;
   left: 0;
-  width: 2px;
-  background: #fff;
-  pointer-events: none;
+  width: 18px;
+  transform: translateX(-50%);
+  background: transparent;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
 }
 
 .media-inspector-empty {
