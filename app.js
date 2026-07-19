@@ -6785,6 +6785,9 @@ function createHlgFrameProcessor(width, height, sourceIsDisplayP3 = false) {
           bt2020.g = 0.069097 * linear_rgb.r + 0.919540 * linear_rgb.g + 0.011362 * linear_rgb.b;
           bt2020.b = 0.016391 * linear_rgb.r + 0.088013 * linear_rgb.g + 0.895595 * linear_rgb.b;
         }
+        // SDR graphics white must land at 75% HLG, not at the 1000-nit peak.
+        // This keeps LUT colors visually aligned with the SDR editor preview.
+        bt2020 *= 0.26496256;
         out_color = vec4(hlg(bt2020.r), hlg(bt2020.g), hlg(bt2020.b), 1.0);
       }`);
     const program = gl.createProgram();
@@ -8594,7 +8597,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=90", { updateViaCache: "none" })
+      .register("service-worker.js?v=91", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
