@@ -48,6 +48,7 @@ As famílias tipográficas incluem opções clássicas, modernas, editoriais, co
 ### Cor e filtros
 
 - Inclui filtros com miniaturas para comparação rápida.
+- Permite escolher filtro, intensidade e ajustes de cor separadamente para cada vídeo.
 - Organiza os filtros por coleções e permite buscar pelo nome.
 - Permite importar LUTs 3D `.cube`, visualizar o resultado e ajustar a intensidade.
 - Inclui ajustes de exposição, brilho, contraste, saturação, brilho da cor, temperatura, calor, matiz, realces, sombras e ponto preto.

@@ -4858,7 +4858,7 @@ body {
   }
 }
 
-/* Project ratio and visual grid presets v88 */
+/* Project ratio and visual grid presets v89 */
 @media (max-width: 760px) {
   .project-aspect-button {
     min-width: 58px;
@@ -5609,6 +5609,34 @@ body { padding: 10px; }
 .filter-browser-heading small {
   color: #899596;
   font-size: 9px;
+}
+
+#filterTargetName {
+  max-width: 220px;
+  overflow: hidden;
+  color: #43ddc3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adjustment-heading > span {
+  min-width: 0;
+}
+
+#colorTargetName {
+  display: block;
+  max-width: 220px;
+  margin-top: 3px;
+  overflow: hidden;
+  color: #43ddc3;
+  font-size: 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-filter-canvas {
+  pointer-events: none;
 }
 
 #clearFilterPresetButton {

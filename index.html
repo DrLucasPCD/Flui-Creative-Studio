@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=88" />
+    <link rel="stylesheet" href="styles.css?v=89" />
   </head>
   <body>
     <header class="topbar">
@@ -396,7 +396,7 @@
 
           <div class="tool-panel filter-tools" data-tool-panel="filters" hidden>
             <div class="filter-browser-heading">
-              <span><strong>Filtros</strong><small id="filterCatalogStatus">Carregando...</small></span>
+              <span><strong>Filtros</strong><small id="filterCatalogStatus">Carregando...</small><small id="filterTargetName">Vídeo principal</small></span>
               <button id="clearFilterPresetButton" type="button">Sem filtro</button>
             </div>
             <div class="filter-browser-controls">
@@ -427,7 +427,7 @@
 
           <div class="tool-panel color-tools" data-tool-panel="color" hidden>
             <div class="adjustment-heading">
-              <strong>Ajustes</strong>
+              <span><strong>Ajustes</strong><small id="colorTargetName">Ajustando: vídeo principal</small></span>
               <button id="resetAdjustmentsButton" type="button">Redefinir</button>
             </div>
             <div class="adjustment-grid">
@@ -560,6 +560,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=88"></script>
+    <script src="app.js?v=89"></script>
   </body>
 </html>

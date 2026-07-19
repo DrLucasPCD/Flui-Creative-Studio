@@ -122,6 +122,8 @@ const elements = {
   lutIntensityValue: document.querySelector("#lutIntensityValue"),
   removeLutButton: document.querySelector("#removeLutButton"),
   filterCatalogStatus: document.querySelector("#filterCatalogStatus"),
+  filterTargetName: document.querySelector("#filterTargetName"),
+  colorTargetName: document.querySelector("#colorTargetName"),
   filterSearchInput: document.querySelector("#filterSearchInput"),
   filterCollectionSelect: document.querySelector("#filterCollectionSelect"),
   filterPresetList: document.querySelector("#filterPresetList"),
@@ -240,6 +242,7 @@ const state = {
   lutExportRenderer: null,
   lutPresets: [],
   activeLutPresetId: null,
+  lutIntensity: 100,
   fitCanvas: null,
   optimizedOutput: null,
   videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
@@ -1844,16 +1847,58 @@ function createLutRenderer(canvas) {
   };
 }
 
-function hasVideoAdjustments() {
-  return Object.values(state.videoAdjustments).some((value) => Math.abs(Number(value) || 0) > 0.0001);
+function filterTargetClip() {
+  const selected = selectedMediaClip();
+  if (["sequence", "video"].includes(selected?.type)) return selected;
+  return activeSequenceClip();
 }
 
-function drawLutFrame(canvas, rendererKey, width, height, source = elements.video) {
+function isPrimarySequenceClip(clip) {
+  return clip?.type === "sequence" && clip === state.sequenceClips[0];
+}
+
+function colorProfileForClip(clip = filterTargetClip()) {
+  const legacyPrimary = !clip || isPrimarySequenceClip(clip);
+  return {
+    lut: clip?.lut ?? (legacyPrimary ? state.lut : null),
+    presetId: clip?.lutPresetId ?? (legacyPrimary ? state.activeLutPresetId : null),
+    intensity: clamp(Number(clip?.lutIntensity ?? (legacyPrimary ? state.lutIntensity : 100)) || 0, 0, 100),
+    adjustments: {
+      ...DEFAULT_VIDEO_ADJUSTMENTS,
+      ...(clip?.videoAdjustments || (legacyPrimary ? state.videoAdjustments : null) || {}),
+    },
+  };
+}
+
+function profileHasVideoAdjustments(profile) {
+  return Object.values(profile?.adjustments || {}).some((value) => Math.abs(Number(value) || 0) > 0.0001);
+}
+
+function colorProfileHasEffects(profile) {
+  return Boolean(profile?.lut && Number(profile.intensity) > 0) || profileHasVideoAdjustments(profile);
+}
+
+function setClipColorProfile(clip, changes) {
+  if (clip) {
+    if (Object.hasOwn(changes, "lut")) clip.lut = changes.lut;
+    if (Object.hasOwn(changes, "presetId")) clip.lutPresetId = changes.presetId;
+    if (Object.hasOwn(changes, "intensity")) clip.lutIntensity = changes.intensity;
+    if (Object.hasOwn(changes, "adjustments")) clip.videoAdjustments = { ...changes.adjustments };
+  }
+  if (!clip || isPrimarySequenceClip(clip)) {
+    if (Object.hasOwn(changes, "lut")) state.lut = changes.lut;
+    if (Object.hasOwn(changes, "presetId")) state.activeLutPresetId = changes.presetId;
+    if (Object.hasOwn(changes, "intensity")) state.lutIntensity = changes.intensity;
+    if (Object.hasOwn(changes, "adjustments")) state.videoAdjustments = { ...changes.adjustments };
+  }
+}
+
+function drawLutFrame(canvas, rendererKey, width, height, source = elements.video, profile = colorProfileForClip(activeSequenceClip())) {
   const sourceReady = source === elements.video
     ? elements.video.readyState >= 2
     : Boolean(source?.width || source?.videoWidth);
-  const hasLut = Boolean(state.lut && Number(elements.lutIntensity.value) > 0);
-  if ((!hasLut && !hasVideoAdjustments()) || !sourceReady) return false;
+  const hasLut = Boolean(profile?.lut && Number(profile.intensity) > 0);
+  if ((!hasLut && !profileHasVideoAdjustments(profile)) || !sourceReady) return false;
   if (!state[rendererKey]) state[rendererKey] = createLutRenderer(canvas);
   const renderer = state[rendererKey];
   const { gl } = renderer;
@@ -1868,8 +1913,8 @@ function drawLutFrame(canvas, rendererKey, width, height, source = elements.vide
   gl.bindTexture(gl.TEXTURE_2D, renderer.videoTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
 
-  if (hasLut && renderer.lutId !== state.lut.id) {
-    if (state.lut.size * state.lut.size > gl.getParameter(gl.MAX_TEXTURE_SIZE)) {
+  if (hasLut && renderer.lutId !== profile.lut.id) {
+    if (profile.lut.size * profile.lut.size > gl.getParameter(gl.MAX_TEXTURE_SIZE)) {
       throw new Error("Este LUT é grande demais para a memória gráfica deste aparelho.");
     }
     gl.activeTexture(gl.TEXTURE1);
@@ -1879,22 +1924,22 @@ function drawLutFrame(canvas, rendererKey, width, height, source = elements.vide
       gl.TEXTURE_2D,
       0,
       gl.RGBA,
-      state.lut.size * state.lut.size,
-      state.lut.size,
+      profile.lut.size * profile.lut.size,
+      profile.lut.size,
       0,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
-      state.lut.pixels,
+      profile.lut.pixels,
     );
-    renderer.lutId = state.lut.id;
+    renderer.lutId = profile.lut.id;
   }
 
   gl.uniform1f(renderer.hasLutLocation, hasLut ? 1 : 0);
-  gl.uniform1f(renderer.sizeLocation, hasLut ? state.lut.size : 2);
-  gl.uniform1f(renderer.intensityLocation, hasLut ? Number(elements.lutIntensity.value) / 100 : 0);
-  gl.uniform3fv(renderer.domainMinLocation, hasLut ? state.lut.domainMin : [0, 0, 0]);
-  gl.uniform3fv(renderer.domainMaxLocation, hasLut ? state.lut.domainMax : [1, 1, 1]);
-  Object.entries(state.videoAdjustments).forEach(([name, value]) => {
+  gl.uniform1f(renderer.sizeLocation, hasLut ? profile.lut.size : 2);
+  gl.uniform1f(renderer.intensityLocation, hasLut ? Number(profile.intensity) / 100 : 0);
+  gl.uniform3fv(renderer.domainMinLocation, hasLut ? profile.lut.domainMin : [0, 0, 0]);
+  gl.uniform3fv(renderer.domainMaxLocation, hasLut ? profile.lut.domainMax : [1, 1, 1]);
+  Object.entries(profile.adjustments).forEach(([name, value]) => {
     gl.uniform1f(renderer.adjustmentLocations[name], (Number(value) || 0) / 100);
   });
   gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1902,52 +1947,70 @@ function drawLutFrame(canvas, rendererKey, width, height, source = elements.vide
 }
 
 function drawLutPreview() {
-  if (((!state.lut || Number(elements.lutIntensity.value) <= 0) && !hasVideoAdjustments()) || !elements.video.videoWidth) {
+  const baseProfile = colorProfileForClip(activeSequenceClip());
+  if (!colorProfileHasEffects(baseProfile) || !elements.video.videoWidth) {
     elements.lutPreviewCanvas.hidden = true;
-    return;
+  } else {
+    const sourceWidth = elements.video.videoWidth;
+    const sourceHeight = elements.video.videoHeight;
+    const maxDimension = /iPad|iPhone|iPod/.test(navigator.userAgent) ? 960 : 1280;
+    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+    try {
+      const rendered = drawLutFrame(
+        elements.lutPreviewCanvas,
+        "lutPreviewRenderer",
+        Math.max(2, Math.round(sourceWidth * scale)),
+        Math.max(2, Math.round(sourceHeight * scale)),
+        elements.video,
+        baseProfile,
+      );
+      elements.lutPreviewCanvas.hidden = !rendered;
+    } catch (error) {
+      console.error(error);
+      removeLut(false, activeSequenceClip());
+      showToast(error.message || "Não foi possível aplicar este LUT.");
+    }
   }
-  const sourceWidth = elements.video.videoWidth;
-  const sourceHeight = elements.video.videoHeight;
-  const maxDimension = /iPad|iPhone|iPod/.test(navigator.userAgent) ? 960 : 1280;
-  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
-  try {
-    const rendered = drawLutFrame(
-      elements.lutPreviewCanvas,
-      "lutPreviewRenderer",
-      Math.max(2, Math.round(sourceWidth * scale)),
-      Math.max(2, Math.round(sourceHeight * scale)),
-    );
-    elements.lutPreviewCanvas.hidden = !rendered;
-  } catch (error) {
-    console.error(error);
-    removeLut(false);
-    showToast(error.message || "Não foi possível aplicar este LUT.");
-  }
+  drawOverlayFilterPreviews();
 }
 
 function updateLutControls() {
-  const hasLut = Boolean(state.lut);
-  elements.lutStatus.textContent = hasLut ? `${state.lut.name} · ${state.lut.size}³` : "Sem LUT";
+  const target = filterTargetClip();
+  const profile = colorProfileForClip(target);
+  const hasLut = Boolean(profile.lut);
+  elements.lutStatus.textContent = hasLut ? `${profile.lut.name} · ${profile.lut.size}³` : "Sem LUT";
+  if (elements.filterTargetName) {
+    elements.filterTargetName.textContent = target?.name ? `Aplicando em: ${target.name}` : "Aplicando em: vídeo principal";
+  }
+  if (elements.colorTargetName) {
+    elements.colorTargetName.textContent = target?.name ? `Ajustando: ${target.name}` : "Ajustando: vídeo principal";
+  }
+  elements.lutIntensity.value = String(profile.intensity);
   elements.lutIntensity.disabled = !hasLut;
   elements.removeLutButton.disabled = !hasLut;
   elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
   elements.clearFilterPresetButton?.classList.toggle("active", !hasLut);
+  elements.adjustmentInputs.forEach((input) => {
+    const value = Number(profile.adjustments[input.dataset.videoAdjustment]) || 0;
+    input.value = String(value);
+    if (input.nextElementSibling) input.nextElementSibling.value = String(value);
+  });
   renderFilterPresets();
-  if (!hasLut && !hasVideoAdjustments()) elements.lutPreviewCanvas.hidden = true;
+  if (!hasLut && !profileHasVideoAdjustments(profile) && isPrimarySequenceClip(target)) elements.lutPreviewCanvas.hidden = true;
 }
 
 async function loadLut(file) {
   if (!file) return;
+  const target = filterTargetClip();
   try {
     const lut = parseCubeLut(await file.text(), file.name);
-    state.lut = lut;
-    state.activeLutPresetId = null;
+    setClipColorProfile(target, { lut, presetId: null, intensity: 100 });
     state.lutPreviewRenderer = null;
     state.lutExportRenderer = null;
     updateLutControls();
     drawLutPreview();
     saveLocalProject();
-    showToast(`LUT ${lut.name} aplicado.`);
+    showToast(`LUT ${lut.name} aplicado em ${target?.name || "vídeo principal"}.`);
   } catch (error) {
     console.error(error);
     elements.lutInput.value = "";
@@ -1955,15 +2018,14 @@ async function loadLut(file) {
   }
 }
 
-function removeLut(notify = true) {
-  const hadLut = Boolean(state.lut);
-  state.lut = null;
-  state.activeLutPresetId = null;
+function removeLut(notify = true, target = filterTargetClip()) {
+  const hadLut = Boolean(colorProfileForClip(target).lut);
+  setClipColorProfile(target, { lut: null, presetId: null });
   elements.lutInput.value = "";
   updateLutControls();
   drawLutPreview();
   saveLocalProject();
-  if (notify && hadLut) showToast("LUT removido do vídeo.");
+  if (notify && hadLut) showToast(`Filtro removido de ${target?.name || "vídeo principal"}.`);
 }
 
 function normalizedFilterText(value) {
@@ -1987,8 +2049,9 @@ function renderFilterPresets() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "filter-preset-card";
-    button.classList.toggle("active", state.activeLutPresetId === preset.id);
-    button.setAttribute("aria-pressed", String(state.activeLutPresetId === preset.id));
+    const activePresetId = colorProfileForClip().presetId;
+    button.classList.toggle("active", activePresetId === preset.id);
+    button.setAttribute("aria-pressed", String(activePresetId === preset.id));
     button.setAttribute("aria-label", `Aplicar filtro ${preset.name}`);
 
     const image = document.createElement("img");
@@ -2019,7 +2082,7 @@ function renderFilterPresets() {
   }
 }
 
-async function loadLutPreset(preset, trigger = null) {
+async function loadLutPreset(preset, trigger = null, target = filterTargetClip()) {
   if (!preset) return;
   trigger?.classList.add("loading");
   trigger && (trigger.disabled = true);
@@ -2029,14 +2092,13 @@ async function loadLutPreset(preset, trigger = null) {
     const fileName = decodeURIComponent(preset.path.split("/").at(-1));
     const lut = parseCubeLut(await response.text(), fileName);
     lut.name = preset.name;
-    state.lut = lut;
-    state.activeLutPresetId = preset.id;
+    setClipColorProfile(target, { lut, presetId: preset.id, intensity: colorProfileForClip(target).intensity || 100 });
     state.lutPreviewRenderer = null;
     state.lutExportRenderer = null;
     updateLutControls();
     drawLutPreview();
     saveLocalProject();
-    showToast(`Filtro ${preset.name} aplicado.`);
+    showToast(`Filtro ${preset.name} aplicado em ${target?.name || "vídeo principal"}.`);
   } catch (error) {
     console.error(error);
     showToast(error.message || "Não foi possível aplicar este filtro.");
@@ -2061,7 +2123,7 @@ async function loadFilterCatalog() {
     });
     renderFilterPresets();
     const savedPreset = state.lutPresets.find((preset) => preset.id === state.activeLutPresetId);
-    if (savedPreset) await loadLutPreset(savedPreset);
+    if (savedPreset) await loadLutPreset(savedPreset, null, state.sequenceClips[0] || null);
   } catch (error) {
     console.error(error);
     elements.filterCatalogStatus.textContent = "Indisponível";
@@ -2433,6 +2495,8 @@ function loadVideo(file) {
     clip.audioElement?.pause();
     clip.mediaElement?.pause();
     clip.element?.remove();
+    clip.filterCanvas?.remove();
+    if (clip.filterRendererKey) delete state[clip.filterRendererKey];
     URL.revokeObjectURL(clip.url);
   });
   state.audioTrackNodes.forEach(({ source, gain }) => {
@@ -2472,6 +2536,10 @@ function loadVideo(file) {
     volume: 1,
     playbackRate: 1,
     sourceSpan: 0,
+    lut: state.lut,
+    lutPresetId: state.activeLutPresetId,
+    lutIntensity: state.lutIntensity,
+    videoAdjustments: { ...state.videoAdjustments },
   }];
   state.activeSequenceIndex = 0;
   state.selectedMediaClipId = state.sequenceClips[0].id;
@@ -2759,6 +2827,17 @@ function renderMediaOverlayElements() {
       elements.mediaOverlayLayer.append(media);
     }
 
+    if (clip.type === "video" && !clip.filterCanvas?.isConnected) {
+      const canvas = document.createElement("canvas");
+      canvas.className = "media-overlay-image media-overlay-video media-filter-canvas";
+      canvas.dataset.filterClipId = clip.id;
+      canvas.hidden = true;
+      clip.filterCanvas = canvas;
+      clip.filterRendererKey = `clipFilterRenderer_${clip.id.replaceAll("-", "")}`;
+      elements.mediaOverlayLayer.append(canvas);
+    }
+    if (clip.filterCanvas) clip.filterCanvas.style.zIndex = String(layerIndex + 1);
+
     if (!clip.resizeHandle?.isConnected) {
       const handle = document.createElement("button");
       handle.type = "button";
@@ -2803,7 +2882,38 @@ function renderMediaOverlayElements() {
       clip.resizeHandle = handle;
       elements.mediaOverlayLayer.append(handle);
     }
-    clip.resizeHandle.style.zIndex = String(layerIndex + 1);
+    clip.resizeHandle.style.zIndex = String(layerIndex + 2);
+  });
+}
+
+function drawOverlayFilterPreviews(time = projectCurrentTime()) {
+  state.overlayVideoClips.forEach((clip) => {
+    const canvas = clip.filterCanvas;
+    const source = clip.mediaElement;
+    const profile = colorProfileForClip(clip);
+    const active = clipIsActiveAtTime(clip, time) && colorProfileHasEffects(profile) && source?.readyState >= 2;
+    if (!canvas || !active) {
+      if (canvas) canvas.hidden = true;
+      return;
+    }
+    const sourceWidth = source.videoWidth;
+    const sourceHeight = source.videoHeight;
+    const maxDimension = /iPad|iPhone|iPod/.test(navigator.userAgent) ? 960 : 1280;
+    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+    try {
+      const rendered = drawLutFrame(
+        canvas,
+        clip.filterRendererKey,
+        Math.max(2, Math.round(sourceWidth * scale)),
+        Math.max(2, Math.round(sourceHeight * scale)),
+        source,
+        profile,
+      );
+      canvas.hidden = !rendered;
+    } catch (error) {
+      console.error(error);
+      canvas.hidden = true;
+    }
   });
 }
 
@@ -2952,6 +3062,7 @@ function activeVideoGrid(time = projectCurrentTime()) {
   const candidates = activeGridVideoCandidates(time);
   const byKey = new Map(candidates.map((item) => [item.key, item]));
   const participants = state.videoGridClipIds.map((key) => byKey.get(key)).filter(Boolean);
+  if (participants.length !== state.videoGridMode) return null;
   return { participants, keys: new Set(participants.map((item) => item.key)) };
 }
 
@@ -3190,6 +3301,8 @@ function updateMediaPreview(time = projectCurrentTime()) {
       ? active && gridVideo
       : active && (!fullSizeVideo || clip.id === primaryVideo?.id);
     clip.element.hidden = !previewActive;
+    const filteredVideo = clip.type === "video" && colorProfileHasEffects(colorProfileForClip(clip));
+    if (clip.filterCanvas) clip.filterCanvas.hidden = !previewActive || !filteredVideo;
     if (clip.resizeHandle) clip.resizeHandle.hidden = gridActive || !previewActive || clip.id !== state.selectedMediaClipId;
     if (!active || (clip.type === "video" && !previewActive)) {
       if (clip.type === "video") {
@@ -3202,15 +3315,28 @@ function updateMediaPreview(time = projectCurrentTime()) {
     const motion = mediaClipAnimation(clip, time);
     if (gridVideo) {
       setGridElementRect(clip.element, gridSlots[gridIndex], clip);
+      if (clip.filterCanvas) setGridElementRect(clip.filterCanvas, gridSlots[gridIndex], clip);
     } else {
       resetGridElementRect(clip.element);
       clip.element.style.left = `${clip.x}%`;
       clip.element.style.top = `${clip.y}%`;
       clip.element.style.width = `${clip.size}%`;
+      if (clip.filterCanvas) {
+        resetGridElementRect(clip.filterCanvas);
+        clip.filterCanvas.style.left = `${clip.x}%`;
+        clip.filterCanvas.style.top = `${clip.y}%`;
+        clip.filterCanvas.style.width = `${clip.size}%`;
+      }
     }
-    clip.element.style.opacity = String(motion.opacity);
-    if (!gridVideo) clip.element.style.transform = `translate(-50%, -50%) translateX(${motion.offsetX}%) rotate(${clip.rotation || 0}deg) scale(${motion.scale})`;
+    clip.element.style.opacity = String(filteredVideo ? 0 : motion.opacity);
+    if (clip.filterCanvas) clip.filterCanvas.style.opacity = String(motion.opacity);
+    if (!gridVideo) {
+      const transform = `translate(-50%, -50%) translateX(${motion.offsetX}%) rotate(${clip.rotation || 0}deg) scale(${motion.scale})`;
+      clip.element.style.transform = transform;
+      if (clip.filterCanvas) clip.filterCanvas.style.transform = transform;
+    }
     clip.element.classList.toggle("selected", clip.id === state.selectedMediaClipId);
+    clip.filterCanvas?.classList.toggle("selected", clip.id === state.selectedMediaClipId);
     if (clip.resizeHandle && !clip.resizeHandle.hidden) {
       const sourceWidth = clip.type === "video" ? clip.mediaElement.videoWidth : clip.image.naturalWidth;
       const sourceHeight = clip.type === "video" ? clip.mediaElement.videoHeight : clip.image.naturalHeight;
@@ -3284,7 +3410,8 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
       ? (baseTrackVisibleAtTime(time) ? clipFadeFactor(item.clip, time) : 0)
       : mediaClipAnimation(item.clip, time).opacity;
 
-    if (item.type === "base" && (state.lut || hasVideoAdjustments())) {
+    const colorProfile = colorProfileForClip(item.clip);
+    if (colorProfileHasEffects(colorProfile)) {
       if (!state.gridCellCanvas) state.gridCellCanvas = document.createElement("canvas");
       const cell = state.gridCellCanvas;
       cell.width = cellWidth;
@@ -3293,7 +3420,7 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
       cellContext.fillStyle = "#000";
       cellContext.fillRect(0, 0, cellWidth, cellHeight);
       drawSourceCover(cellContext, source, 0, 0, cellWidth, cellHeight, focus);
-      if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", cellWidth, cellHeight, cell)) {
+      if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", cellWidth, cellHeight, cell, colorProfile)) {
         source = elements.lutRenderCanvas;
       } else {
         source = cell;
@@ -3316,12 +3443,23 @@ function drawImageOverlays(context, width, height, time, sourceOverrides = null)
   const gridActive = Boolean(activeVideoGrid(time)?.participants.length);
   orderedVisualClips().forEach((clip) => {
     if (gridActive && clip.type === "video") return;
-    const source = clip.type === "video"
+    let source = clip.type === "video"
       ? sourceOverrides?.get(clip.id) || clip.mediaElement
       : clip.image;
     const sourceWidth = source?.videoWidth || source?.naturalWidth;
     const sourceHeight = source?.videoHeight || source?.naturalHeight;
     if (!clipIsActiveAtTime(clip, time) || !sourceWidth || !sourceHeight) return;
+    if (clip.type === "video") {
+      const profile = colorProfileForClip(clip);
+      if (colorProfileHasEffects(profile)) {
+        const scale = Math.min(1, Math.max(width, height) / Math.max(sourceWidth, sourceHeight));
+        const filterWidth = Math.max(2, Math.round(sourceWidth * scale));
+        const filterHeight = Math.max(2, Math.round(sourceHeight * scale));
+        if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", filterWidth, filterHeight, source, profile)) {
+          source = elements.lutRenderCanvas;
+        }
+      }
+    }
     const motion = mediaClipAnimation(clip, time);
     const drawWidth = width * (clip.size / 100) * motion.scale;
     const drawHeight = drawWidth * (sourceHeight / sourceWidth);
@@ -4483,6 +4621,7 @@ function renderMediaTracks() {
     });
   });
   updateMediaInspector();
+  updateLutControls();
   updateMediaPreview();
 }
 
@@ -4500,6 +4639,8 @@ function selectMediaClip(id, openMediaTab = false, segmentKey = null) {
     elements.stage.classList.remove("tools-collapsed");
     activateToolTab("media");
   }
+  updateLutControls();
+  drawLutPreview();
   renderMediaTracks();
   if (shouldSeek) seekProjectTime(Math.min(clipEffectiveEnd(clip) - 0.001, clip.start + 0.02), false).catch(() => {});
 }
@@ -4622,6 +4763,7 @@ async function addSequenceVideos(files) {
         id: crypto.randomUUID(), type: "sequence", name: file.name, file, url,
         duration: probe.duration, sourceDuration: probe.duration, width: probe.videoWidth, height: probe.videoHeight,
         start: 0, end: 0, volume: 1, playbackRate: 1, sourceSpan: probe.duration, thumbnail,
+        lutIntensity: 100, videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
       });
       state.selectedMediaClipId = state.sequenceClips.at(-1).id;
       probe.removeAttribute("src");
@@ -4655,6 +4797,7 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
         id: crypto.randomUUID(), type: "video", name: file.name, file, url, mediaElement,
         trackId, start, end, x: 50, y: 50, size: fittedOverlaySize(mediaElement), opacity: 1, animation: "none", volume: 1,
         playbackRate: 1, sourceSpan: end - start,
+        lutIntensity: 100, videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
         thumbnail: await createVideoThumbnail(mediaElement),
       };
       state.overlayVideoClips.push(clip);
@@ -5044,6 +5187,8 @@ function deleteSelectedMediaClip() {
   graphNode?.gain.disconnect();
   state.audioTrackNodes.delete(clip.id);
   clip.element?.remove();
+  clip.filterCanvas?.remove();
+  if (clip.filterRendererKey) delete state[clip.filterRendererKey];
   const deletingSequenceIndex = clip.type === "sequence"
     ? state.sequenceClips.findIndex((item) => item.id === clip.id)
     : -1;
@@ -5913,7 +6058,7 @@ async function processSequenceBoundaryAtPlayhead() {
   }
 }
 
-function drawVideoFrame(context, width, height, source = elements.video, fixedTransition = undefined) {
+function drawVideoFrame(context, width, height, source = elements.video, fixedTransition = undefined, colorClip = activeSequenceClip()) {
   const hasFixedTransition = fixedTransition !== undefined;
   const transition = hasFixedTransition ? fixedTransition : state.cutTransition;
   const progress = hasFixedTransition
@@ -5941,7 +6086,14 @@ function drawVideoFrame(context, width, height, source = elements.video, fixedTr
     fitContext.drawImage(source, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
     preparedSource = state.fitCanvas;
   }
-  const hasLutFrame = drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", width, height, preparedSource);
+  const hasLutFrame = drawLutFrame(
+    elements.lutRenderCanvas,
+    "lutExportRenderer",
+    width,
+    height,
+    preparedSource,
+    colorProfileForClip(colorClip),
+  );
   const frameSource = hasLutFrame ? elements.lutRenderCanvas : preparedSource;
 
   if (transition?.type === "zoom" && progress < 1) {
@@ -6995,9 +7147,6 @@ async function renderCaptionedVideoOptimized(preset) {
       return videoFirstTimestamp + sourceTimeAtEditedTime(outputTime, sourceDuration);
     });
     const videoSink = new mediabunny.CanvasSink(videoTrack, {
-      width,
-      height,
-      fit: "contain",
       poolSize: 1,
     });
 
@@ -7024,9 +7173,6 @@ async function renderCaptionedVideoOptimized(preset) {
           return auxiliaryFirstTimestamp + clamp(mediaTime, 0, Math.max(0, auxiliaryDuration - 0.000001));
         });
         const sink = new mediabunny.CanvasSink(auxiliaryTrack, {
-          width,
-          height,
-          fit: "contain",
           poolSize: 1,
         });
         gridDecoders.push({
@@ -7058,7 +7204,7 @@ async function renderCaptionedVideoOptimized(preset) {
         context.fillRect(0, 0, width, height);
         const drewGrid = drawVideoGridFrame(context, width, height, sourceTime, lastFrame, decodedGridSources);
         if (!drewGrid && baseTrackVisibleAtTime(sourceTime)) {
-          drawVideoFrame(context, width, height, lastFrame, transitionAtEditedTime(outputTime));
+          drawVideoFrame(context, width, height, lastFrame, transitionAtEditedTime(outputTime), baseClip);
           drawBaseFadeOverlay(context, width, height, sourceTime);
         }
         drawImageOverlays(context, width, height, sourceTime, decodedGridSources);
@@ -7494,7 +7640,13 @@ async function exportProject() {
             ? { x: clip.x, y: clip.y, size: clip.size, opacity: clip.opacity, animation: clip.animation }
             : {}),
           ...(["sequence", "video"].includes(clip.type)
-            ? { gridFocusX: gridFocusForClip(clip).x, gridFocusY: gridFocusForClip(clip).y }
+            ? {
+                gridFocusX: gridFocusForClip(clip).x,
+                gridFocusY: gridFocusForClip(clip).y,
+                filterPresetId: colorProfileForClip(clip).presetId,
+                filterIntensity: colorProfileForClip(clip).intensity,
+                videoAdjustments: colorProfileForClip(clip).adjustments,
+              }
             : {}),
           ...(["audio", "video", "sequence"].includes(clip.type) ? { volume: clip.volume } : {}),
           ...(["audio", "video", "sequence"].includes(clip.type)
@@ -7523,7 +7675,7 @@ async function exportProject() {
               name: state.lut.name,
               fileName: state.lut.fileName,
               size: state.lut.size,
-              intensity: Number(elements.lutIntensity.value),
+              intensity: state.lutIntensity,
             }
           : null,
         magneticCuts: elements.magneticCuts.checked,
@@ -7569,7 +7721,7 @@ function saveLocalProject() {
     videoGridClipIds: state.videoGridClipIds,
     videoGridLayout: state.videoGridLayout,
     projectAspect: state.projectAspect,
-    lutIntensity: elements.lutIntensity.value,
+    lutIntensity: state.lutIntensity,
     lutPresetId: state.activeLutPresetId,
     cuts: state.cuts,
     magneticCuts: elements.magneticCuts.checked,
@@ -7624,7 +7776,8 @@ function restoreLocalProject() {
     state.projectAspect = PROJECT_ASPECTS[data.projectAspect] ? data.projectAspect : "source";
     updateVideoGridButtons();
     updateProjectAspectControls();
-    elements.lutIntensity.value = data.lutIntensity || "100";
+    state.lutIntensity = clamp(Number(data.lutIntensity) || 100, 0, 100);
+    elements.lutIntensity.value = String(state.lutIntensity);
     elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
     state.activeLutPresetId = data.lutPresetId || null;
     elements.magneticCuts.checked = data.magneticCuts !== false;
@@ -7703,6 +7856,7 @@ elements.filterSearchInput.addEventListener("input", renderFilterPresets);
 elements.filterCollectionSelect.addEventListener("change", renderFilterPresets);
 elements.clearFilterPresetButton.addEventListener("click", () => removeLut());
 elements.lutIntensity.addEventListener("input", () => {
+  setClipColorProfile(filterTargetClip(), { intensity: Number(elements.lutIntensity.value) || 0 });
   elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
   drawLutPreview();
   saveLocalProject();
@@ -8030,21 +8184,25 @@ elements.positionButtons.forEach((button) => {
 elements.adjustmentInputs.forEach((input) => {
   input.addEventListener("input", () => {
     const value = Number(input.value) || 0;
-    state.videoAdjustments[input.dataset.videoAdjustment] = value;
+    const target = filterTargetClip();
+    const adjustments = colorProfileForClip(target).adjustments;
+    adjustments[input.dataset.videoAdjustment] = value;
+    setClipColorProfile(target, { adjustments });
     if (input.nextElementSibling) input.nextElementSibling.value = String(value);
     drawLutPreview();
   });
   input.addEventListener("change", saveLocalProject);
 });
 elements.resetAdjustmentsButton.addEventListener("click", () => {
-  state.videoAdjustments = { ...DEFAULT_VIDEO_ADJUSTMENTS };
+  const target = filterTargetClip();
+  setClipColorProfile(target, { adjustments: DEFAULT_VIDEO_ADJUSTMENTS });
   elements.adjustmentInputs.forEach((input) => {
     input.value = "0";
     if (input.nextElementSibling) input.nextElementSibling.value = "0";
   });
   drawLutPreview();
   saveLocalProject();
-  showToast("Ajustes de cor redefinidos.");
+  showToast(`Ajustes de ${target?.name || "vídeo principal"} redefinidos.`);
 });
 
 elements.imageTrackInput.addEventListener("change", async (event) => {
@@ -8420,7 +8578,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=88", { updateViaCache: "none" })
+      .register("service-worker.js?v=89", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
