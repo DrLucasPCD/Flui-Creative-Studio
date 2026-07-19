@@ -5335,6 +5335,14 @@ body { padding: 10px; }
   .editor-tools { transform: translateY(0); opacity: 1; transition: transform 260ms ease, opacity 180ms ease; }
   .stage.tools-collapsed, .stage.tools-collapsed:has(.media-tools:not([hidden])) { grid-template-rows: minmax(0, 58fr) minmax(0, 42fr) 0 calc(72px + var(--pwa-bottom-overscan, 0px)); }
   .stage.tools-collapsed .editor-tools { visibility: hidden; transform: translateY(100%); opacity: 0; pointer-events: none; transition: transform 260ms ease, opacity 150ms ease, visibility 0s linear 260ms; }
+  .stage.review-focus:not(.tools-collapsed),
+  .stage.review-focus:has(.media-tools:not([hidden])):not(.tools-collapsed) {
+    grid-template-rows: minmax(0, 62fr) 0 minmax(0, 38fr) calc(72px + var(--pwa-bottom-overscan, 0px));
+  }
+  .stage.review-focus:not(.tools-collapsed) .timeline-panel {
+    visibility: hidden;
+    pointer-events: none;
+  }
   .editor-tools > .tool-panel { height: calc(100% - 63px); padding: 10px 14px 18px; overflow: auto; }
   .mobile-project-drawer.open { position: fixed; z-index: 60; top: calc(68px + env(safe-area-inset-top)); right: 12px; left: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px; border: 1px solid #344044; border-radius: 14px; background: #10171a; box-shadow: 0 18px 45px rgba(0,0,0,.55); }
   .mobile-project-drawer strong, .mobile-add-grid { grid-column: 1 / -1; }
@@ -5389,6 +5397,33 @@ body { padding: 10px; }
 .video-shell::backdrop { background: #000; }
 .video-shell video { dynamic-range-limit: no-limit; }
 
+@media (max-width: 760px) {
+  html.composite-fullscreen-open,
+  body.composite-fullscreen-open { overflow: hidden !important; }
+  .video-shell.composite-fullscreen {
+    position: fixed !important;
+    z-index: 1000 !important;
+    top: 50% !important;
+    left: 50% !important;
+    width: min(100vw, calc(100dvh * var(--video-aspect, .5625))) !important;
+    max-width: none !important;
+    height: auto !important;
+    max-height: none !important;
+    aspect-ratio: var(--video-aspect, .5625) !important;
+    transform: translate(-50%, -50%) !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: #000 !important;
+  }
+  .video-shell.composite-fullscreen > #fullscreenButton {
+    position: fixed;
+    z-index: 1010;
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+  }
+}
+
+/* v92: stable multi-video playback/export and composed iPhone fullscreen. */
 /* One-tap editorial composition remains visible in both editor layouts. */
 .editor-tools .caption-tools > .caption-presets {
   display: grid !important;

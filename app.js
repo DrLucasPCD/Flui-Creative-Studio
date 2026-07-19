@@ -756,6 +756,45 @@ function waitForVideoMetadata() {
   });
 }
 
+function waitForMediaSeek(media, time, timeout = 1800) {
+  if (!media) return Promise.resolve();
+  const duration = Number.isFinite(media.duration) ? media.duration : Math.max(0, time);
+  const target = clamp(time, 0, duration);
+  if (!media.seeking && Math.abs((media.currentTime || 0) - target) <= 0.015) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      media.removeEventListener("seeked", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, timeout);
+    media.addEventListener("seeked", finish, { once: true });
+    try {
+      media.currentTime = target;
+    } catch {
+      finish();
+    }
+  });
+}
+
+async function seekSecondaryMediaToProjectTime(time) {
+  const activeMedia = [
+    ...state.overlayVideoClips
+      .filter((clip) => clipIsActiveAtTime(clip, time))
+      .flatMap((clip) => [[clip, clip.mediaElement], [clip, clip.audioElement]].filter(([, media]) => media)),
+    ...state.audioClips
+      .filter((clip) => clipIsActiveAtTime(clip, time))
+      .map((clip) => [clip, clip.audioElement]),
+  ];
+  await Promise.allSettled(activeMedia.map(([clip, media]) => (
+    waitForMediaSeek(media, clipMediaTimeAtTimeline(clip, time))
+  )));
+}
+
 async function seekProjectTime(time, autoplay = false) {
   state.projectEndSignaled = false;
   if (!state.sequenceClips.length) {
@@ -773,7 +812,10 @@ async function seekProjectTime(time, autoplay = false) {
   elements.video.volume = state.mainAudioGain ? 1 : clamp(clip.volume ?? 1);
   if (state.mainAudioGain) state.mainAudioGain.gain.value = clamp(clip.volume ?? 1, 0, 2);
   elements.video.playbackRate = clipPlaybackRate(clip);
-  elements.video.currentTime = clamp((clip.sourceOffset || 0) + localTime * clipPlaybackRate(clip), 0, elements.video.duration || localTime);
+  const projectTime = clamp(time, 0, projectDuration());
+  const mediaTime = (clip.sourceOffset || 0) + localTime * clipPlaybackRate(clip);
+  await waitForMediaSeek(elements.video, mediaTime);
+  await seekSecondaryMediaToProjectTime(projectTime);
   if (autoplay) await elements.video.play().catch(() => {});
   updatePlayer();
 }
@@ -1895,7 +1937,9 @@ function setClipColorProfile(clip, changes) {
 }
 
 function exportLutSurfaceForClip(clip) {
-  const key = clip?.id || "base";
+  // Safari on iPhone is much more stable with one reusable WebGL surface.
+  // Each frame uploads the current clip's LUT and uniforms before drawing.
+  const key = isIOSDevice() ? "ios-shared" : clip?.id || "base";
   let surface = state.lutExportSurfaces.get(key);
   if (surface) return surface;
   const canvas = document.createElement("canvas");
@@ -2631,6 +2675,7 @@ function activateToolTab(name) {
     button.setAttribute("aria-selected", String(active));
   });
   elements.toolPanels.forEach((panel) => (panel.hidden = panel.dataset.toolPanel !== name));
+  elements.stage?.classList.toggle("review-focus", name === "review");
   const labels = {
     caption: ["T", "Legenda"],
     color: ["◉", "Cor"],
@@ -3261,22 +3306,49 @@ function applyVideoGrid(count) {
   showToast(`Grade com ${next} vídeos aplicada.`);
 }
 
-function setClipPreviewPlayback(clip, mediaElement, shouldPlay) {
+function setClipPreviewPlayback(clip, mediaElement, shouldPlay, channel = "media") {
   if (!mediaElement) return;
-  clip.previewShouldPlay = shouldPlay;
+  const shouldPlayKey = channel === "audio" ? "previewAudioShouldPlay" : "previewShouldPlay";
+  const promiseKey = channel === "audio" ? "previewAudioPlayPromise" : "previewPlayPromise";
+  clip[shouldPlayKey] = shouldPlay;
   if (!shouldPlay) {
     if (!mediaElement.paused) mediaElement.pause();
     return;
   }
-  if (!mediaElement.paused || clip.previewPlayPromise) return;
+  if (!mediaElement.paused || clip[promiseKey]) return;
   const playPromise = mediaElement.play();
-  clip.previewPlayPromise = playPromise;
+  clip[promiseKey] = playPromise;
   Promise.resolve(playPromise)
     .catch(() => {})
     .finally(() => {
-      if (clip.previewPlayPromise === playPromise) clip.previewPlayPromise = null;
-      if (!clip.previewShouldPlay || elements.video.paused) mediaElement.pause();
+      if (clip[promiseKey] === playPromise) clip[promiseKey] = null;
+      if (!clip[shouldPlayKey]) mediaElement.pause();
     });
+}
+
+function syncOverlayVideoAudio(clip, time, shouldPlay) {
+  const audioElement = clip.audioElement || clip.mediaElement;
+  if (!audioElement) return;
+  if (!shouldPlay) {
+    clip.previewAudioWasActive = false;
+    audioElement.playbackRate = 1;
+    setClipPreviewPlayback(clip, audioElement, false, "audio");
+    return;
+  }
+  const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, audioElement.duration || Infinity);
+  const drift = localTime - (audioElement.currentTime || 0);
+  const hardSync = !clip.previewAudioWasActive || elements.video.paused || Math.abs(drift) > 0.45;
+  if (hardSync && !audioElement.seeking && Math.abs(drift) > (elements.video.paused ? 0.015 : 0.08)) {
+    audioElement.currentTime = localTime;
+  }
+  clip.previewAudioWasActive = true;
+  audioElement.playbackRate = clipPlaybackRate(clip);
+  const graphNode = state.audioTrackNodes.get(clip.id);
+  const transition = trackTransitionAtTime(clip, time);
+  const transitionGain = (transition?.type === "fade" ? transition.progress : 1) * clipFadeFactor(clip, time);
+  audioElement.volume = graphNode ? 1 : clamp((clip.volume ?? 1) * transitionGain, 0, 1);
+  if (graphNode) graphNode.gain.gain.value = clamp((clip.volume ?? 1) * transitionGain, 0, 2);
+  setClipPreviewPlayback(clip, audioElement, !elements.video.paused, "audio");
 }
 
 function updateMediaPreview(time = projectCurrentTime()) {
@@ -3322,6 +3394,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
     const previewActive = gridActive && clip.type === "video"
       ? active && gridVideo
       : active && (!fullSizeVideo || clip.id === primaryVideo?.id);
+    if (clip.type === "video") syncOverlayVideoAudio(clip, time, active);
     clip.element.hidden = !previewActive;
     const filteredVideo = clip.type === "video" && colorProfileHasEffects(colorProfileForClip(clip));
     if (clip.filterCanvas) clip.filterCanvas.hidden = !previewActive || !filteredVideo;
@@ -3372,7 +3445,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
     if (clip.type === "video") {
       const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, clip.mediaElement.duration || Infinity);
       const drift = localTime - (clip.mediaElement.currentTime || 0);
-      const hardSyncThreshold = gridVideo ? 0.75 : 0.9;
+      const hardSyncThreshold = gridVideo ? 0.28 : 0.6;
       const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > hardSyncThreshold;
       if (hardSync && !clip.mediaElement.seeking && Math.abs(drift) > (elements.video.paused ? 0.015 : 0.08)) {
         clip.mediaElement.currentTime = localTime;
@@ -3382,11 +3455,6 @@ function updateMediaPreview(time = projectCurrentTime()) {
       if (Math.abs(clip.mediaElement.playbackRate - rate) > 0.004) {
         clip.mediaElement.playbackRate = rate;
       }
-      const graphNode = state.audioTrackNodes.get(clip.id);
-      const transition = trackTransitionAtTime(clip, time);
-      const transitionGain = (transition?.type === "fade" ? transition.progress : 1) * clipFadeFactor(clip, time);
-      clip.mediaElement.volume = graphNode ? 1 : clamp((clip.volume ?? 1) * transitionGain, 0, 1);
-      if (graphNode) graphNode.gain.gain.value = clamp((clip.volume ?? 1) * transitionGain, 0, 2);
       setClipPreviewPlayback(clip, clip.mediaElement, !elements.video.paused);
     }
   });
@@ -4225,7 +4293,8 @@ function mediaClipBlock(clip, type, duration, segment = null) {
 async function promoteSequenceClipToVideoTrack(clip, dropTarget, dropTime, segmentStart = clip.start, segmentEnd = clip.end) {
   const sourceIndex = state.sequenceClips.findIndex((item) => item.id === clip.id);
   if (sourceIndex < 0) return;
-  const mediaElement = await loadVideoElement(clip.url);
+  const mediaElement = await loadVideoElement(clip.url, true);
+  const audioElement = createClipAudioElement(clip.url);
   const sourceStart = segmentStart;
   const sourceEnd = segmentEnd;
   const trackId = dropTarget.type === "insert"
@@ -4238,6 +4307,7 @@ async function promoteSequenceClipToVideoTrack(clip, dropTarget, dropTime, segme
     id: crypto.randomUUID(),
     type: "video",
     mediaElement,
+    audioElement,
     trackId,
     start,
     end: Math.min(duration, start + (sourceEnd - sourceStart)),
@@ -4746,6 +4816,14 @@ function loadVideoElement(url, muted = false) {
   });
 }
 
+function createClipAudioElement(url) {
+  const audio = new Audio(url);
+  audio.preload = "metadata";
+  audio.playsInline = true;
+  audio.muted = elements.video.muted;
+  return audio;
+}
+
 async function createVideoThumbnail(video) {
   if (video.readyState < 2) {
     await new Promise((resolve) => {
@@ -4806,11 +4884,12 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
   for (const file of files) {
     const url = URL.createObjectURL(file);
     try {
-      const mediaElement = await loadVideoElement(url);
+      const mediaElement = await loadVideoElement(url, true);
+      const audioElement = createClipAudioElement(url);
       const start = cursor;
       const end = start + mediaElement.duration;
       const clip = {
-        id: crypto.randomUUID(), type: "video", name: file.name, file, url, mediaElement,
+        id: crypto.randomUUID(), type: "video", name: file.name, file, url, mediaElement, audioElement,
         trackId, start, end, x: 50, y: 50, size: fittedOverlaySize(mediaElement), opacity: 1, animation: "none", volume: 1,
         playbackRate: 1, sourceSpan: end - start,
         lutIntensity: 100, videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
@@ -5298,27 +5377,28 @@ async function preparePreviewAudioMixer(force = false) {
 async function togglePlayback() {
   if (!elements.video.src) return;
   if (elements.video.paused) {
-    await preparePreviewAudioMixer().catch((error) => console.warn("Mixer de áudio indisponível", error));
     if (projectCurrentTime() >= projectDuration() - 0.05) {
-      seekProjectTime(0, true).catch(() => {});
-    } else {
-      const time = projectCurrentTime();
-      const grid = activeVideoGrid(time);
-      const gridIds = grid?.keys || new Set();
-      const companions = state.overlayVideoClips.filter((clip) => gridIds.has(clip.id) && clipIsActiveAtTime(clip, time));
-      companions.forEach((clip) => {
-        const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, clip.mediaElement.duration || Infinity);
-        if (!clip.mediaElement.seeking && Math.abs((clip.mediaElement.currentTime || 0) - localTime) > 0.035) {
-          clip.mediaElement.currentTime = localTime;
-        }
-        clip.previewWasActive = true;
-        clip.previewShouldPlay = true;
-      });
-      await Promise.allSettled([
-        elements.video.play(),
-        ...companions.map((clip) => clip.mediaElement.play()),
-      ]);
+      await seekProjectTime(0, false).catch(() => {});
     }
+    const time = projectCurrentTime();
+    const grid = activeVideoGrid(time);
+    const gridIds = grid?.keys || new Set();
+    const activeOverlays = state.overlayVideoClips.filter((clip) => clipIsActiveAtTime(clip, time));
+    const companions = activeOverlays.filter((clip) => gridIds.has(clip.id));
+    companions.forEach((clip) => {
+      clip.previewWasActive = true;
+      clip.previewShouldPlay = true;
+      clip.previewAudioShouldPlay = true;
+    });
+    // Start resume/play calls in the original tap task so Safari keeps the user gesture.
+    const mixerPromise = preparePreviewAudioMixer().catch((error) => console.warn("Mixer de áudio indisponível", error));
+    const playPromises = [
+      elements.video.play(),
+      ...companions.map((clip) => clip.mediaElement.play()),
+      ...activeOverlays.map((clip) => clip.audioElement?.play()).filter(Boolean),
+    ];
+    await Promise.allSettled([mixerPromise, ...playPromises]);
+    updateMediaPreview();
   }
   else elements.video.pause();
 }
@@ -5582,7 +5662,8 @@ async function splitSelectedClipAtPlayhead() {
     };
   } else if (clip.type === "video") {
     const originalSourceSpan = clipSourceSpan(clip);
-    const mediaElement = await loadVideoElement(clip.url);
+    const mediaElement = await loadVideoElement(clip.url, true);
+    const audioElement = createClipAudioElement(clip.url);
     clip.end = time;
     clip.sourceSpan = sourceDelta;
     clip.segmentFades = {};
@@ -5590,6 +5671,7 @@ async function splitSelectedClipAtPlayhead() {
       ...clip,
       id: crypto.randomUUID(),
       mediaElement,
+      audioElement,
       element: null,
       start: time,
       end: snapshot.end,
@@ -5688,7 +5770,10 @@ async function duplicateSelectedMediaClip() {
       element: null,
       previewWasActive: false,
     };
-    if (clip.type === "video") duplicate.mediaElement = await loadVideoElement(clip.url);
+    if (clip.type === "video") {
+      duplicate.mediaElement = await loadVideoElement(clip.url, true);
+      duplicate.audioElement = createClipAudioElement(clip.url);
+    }
     if (clip.type === "audio") {
       duplicate.audioElement = new Audio(clip.url);
       duplicate.audioElement.preload = "metadata";
@@ -6506,7 +6591,7 @@ async function audioTracksFromMixGraph() {
   state.mainAudioGain.gain.value = clamp(clipOutputVolume(activeSequenceClip()), 0, 2);
   [...state.audioClips, ...state.overlayVideoClips].forEach((clip) => {
     if (state.audioTrackNodes.has(clip.id)) return;
-    const mediaElement = clip.type === "video" ? clip.mediaElement : clip.audioElement;
+    const mediaElement = clip.type === "video" ? clip.audioElement || clip.mediaElement : clip.audioElement;
     const source = state.audioContext.createMediaElementSource(mediaElement);
     const gain = state.audioContext.createGain();
     gain.gain.value = clamp(clip.volume ?? 1, 0, 2);
@@ -7399,7 +7484,10 @@ async function renderCaptionedVideoRealtime(preset) {
 
   const previousTime = projectCurrentTime();
   const previousMuted = elements.video.muted;
-  const previousOverlayMuted = new Map(state.overlayVideoClips.map((clip) => [clip.id, clip.mediaElement.muted]));
+  const previousOverlayMuted = new Map(state.overlayVideoClips.map((clip) => [clip.id, {
+    video: clip.mediaElement.muted,
+    audio: clip.audioElement?.muted,
+  }]));
   const previousAudioMuted = new Map(state.audioClips.map((clip) => [clip.id, clip.audioElement.muted]));
   let exportFrameRequest = null;
   let exportFrameRequestType = null;
@@ -7427,13 +7515,17 @@ async function renderCaptionedVideoRealtime(preset) {
     }
     elements.video.pause();
     elements.video.muted = false;
-    state.overlayVideoClips.forEach((clip) => (clip.mediaElement.muted = false));
+    state.overlayVideoClips.forEach((clip) => {
+      clip.mediaElement.muted = true;
+      if (clip.audioElement) clip.audioElement.muted = false;
+    });
     state.audioClips.forEach((clip) => (clip.audioElement.muted = false));
     await seekProjectTime(0, false);
 
     canvasStream = canvas.captureStream(frameRate);
     const audioTracks = await audioTracksForExport();
     audioTracks.forEach((track) => canvasStream.addTrack(track));
+    await seekSecondaryMediaToProjectTime(0);
     const bitsPerSecond = exportVideoBitrate(preset, frameRate);
     const recorder = createCompatibleMediaRecorder(canvasStream, mimeType, bitsPerSecond);
     const recordingMimeType = recorder.mimeType || mimeType;
@@ -7501,14 +7593,26 @@ async function renderCaptionedVideoRealtime(preset) {
     stopRecorder = () => {
       if (recorder.state !== "inactive") recorder.stop();
     };
-    elements.video.addEventListener("ended", stopRecorder, { once: true });
     elements.video.addEventListener("projectended", stopRecorder, { once: true });
     recorder.start(1000);
     renderFrame();
     lastMediaTime = elements.video.currentTime;
     nextRenderMediaTime = lastMediaTime + 1 / frameRate;
     scheduleFrame();
-    await elements.video.play();
+    const exportGrid = activeVideoGrid(0);
+    const exportActiveOverlays = state.overlayVideoClips.filter((clip) => clipIsActiveAtTime(clip, 0));
+    const exportCompanions = exportActiveOverlays.filter((clip) => exportGrid?.keys.has(clip.id));
+    exportCompanions.forEach((clip) => {
+      clip.previewWasActive = true;
+      clip.previewShouldPlay = true;
+      clip.previewAudioShouldPlay = true;
+    });
+    const playback = await Promise.allSettled([
+      elements.video.play(),
+      ...exportCompanions.map((clip) => clip.mediaElement.play()),
+      ...exportActiveOverlays.map((clip) => clip.audioElement?.play()).filter(Boolean),
+    ]);
+    if (playback[0]?.status === "rejected") throw playback[0].reason;
     await finished;
 
     let keepModalOpen = false;
@@ -7545,7 +7649,6 @@ async function renderCaptionedVideoRealtime(preset) {
       }
     }
     if (stopRecorder) {
-      elements.video.removeEventListener("ended", stopRecorder);
       elements.video.removeEventListener("projectended", stopRecorder);
     }
     if (state.recorder?.state && state.recorder.state !== "inactive") {
@@ -7564,7 +7667,11 @@ async function renderCaptionedVideoRealtime(preset) {
     releaseExportSurfaces();
     elements.video.pause();
     elements.video.muted = previousMuted;
-    state.overlayVideoClips.forEach((clip) => (clip.mediaElement.muted = previousOverlayMuted.get(clip.id) ?? false));
+    state.overlayVideoClips.forEach((clip) => {
+      const previous = previousOverlayMuted.get(clip.id);
+      clip.mediaElement.muted = previous?.video ?? true;
+      if (clip.audioElement) clip.audioElement.muted = previous?.audio ?? false;
+    });
     state.audioClips.forEach((clip) => (clip.audioElement.muted = previousAudioMuted.get(clip.id) ?? false));
     await seekProjectTime(Math.min(previousTime, projectDuration() || previousTime), false).catch(() => {});
     if (!state.keepExportModalOpen) elements.exportModal.hidden = true;
@@ -7919,7 +8026,7 @@ elements.video.addEventListener("timeupdate", async () => {
   const switched = await processSequenceBoundaryAtPlayhead();
   if (!switched) processCutsAtPlayhead();
   const duration = projectDuration();
-  if (duration > 0 && projectCurrentTime() >= duration - 0.015) {
+  if (!state.isSequenceSwitching && !elements.video.seeking && duration > 0 && projectCurrentTime() >= duration - 0.015) {
     elements.video.pause();
     if (!state.projectEndSignaled) {
       state.projectEndSignaled = true;
@@ -7951,6 +8058,10 @@ elements.video.addEventListener("ended", async (event) => {
     return;
   }
   stopPreviewMotion();
+  if (!state.projectEndSignaled && projectCurrentTime() >= projectDuration() - 0.05) {
+    state.projectEndSignaled = true;
+    elements.video.dispatchEvent(new Event("projectended"));
+  }
 });
 elements.video.addEventListener("seeked", () => {
   drawLutPreview();
@@ -8016,12 +8127,25 @@ elements.forwardButton.addEventListener("click", () => {
 });
 elements.muteButton.addEventListener("click", () => {
   elements.video.muted = !elements.video.muted;
-  state.overlayVideoClips.forEach((clip) => (clip.mediaElement.muted = elements.video.muted));
+  state.overlayVideoClips.forEach((clip) => {
+    clip.mediaElement.muted = true;
+    if (clip.audioElement) clip.audioElement.muted = elements.video.muted;
+  });
   state.audioClips.forEach((clip) => (clip.audioElement.muted = elements.video.muted));
   elements.muteIcon.textContent = elements.video.muted ? "×" : "◖";
 });
 elements.fullscreenButton.addEventListener("click", async () => {
   try {
+    if (isIOSDevice()) {
+      const opening = !elements.videoShell.classList.contains("composite-fullscreen");
+      elements.videoShell.classList.toggle("composite-fullscreen", opening);
+      document.documentElement.classList.toggle("composite-fullscreen-open", opening);
+      document.body.classList.toggle("composite-fullscreen-open", opening);
+      elements.fullscreenButton.setAttribute("aria-label", opening ? "Fechar tela cheia" : "Ver preview em tela cheia");
+      if (opening) showToast("Gire o iPhone para a horizontal para ampliar o preview.");
+      applyCaptionPositionStyles();
+      return;
+    }
     if (document.fullscreenElement || document.webkitFullscreenElement) {
       await (document.exitFullscreen?.() || document.webkitExitFullscreen?.());
       screen.orientation?.unlock?.();
@@ -8030,11 +8154,6 @@ elements.fullscreenButton.addEventListener("click", async () => {
     if (elements.videoShell.requestFullscreen) await elements.videoShell.requestFullscreen();
     else if (elements.videoShell.webkitRequestFullscreen) elements.videoShell.webkitRequestFullscreen();
     else if (elements.video.webkitEnterFullscreen) elements.video.webkitEnterFullscreen();
-    if (isIOSDevice()) {
-      const orientationLock = screen.orientation?.lock?.("landscape");
-      orientationLock?.catch?.(() => {});
-      showToast("Gire o iPhone para a horizontal para ver o preview completo.");
-    }
   } catch {
     showToast("Não foi possível abrir a tela cheia neste navegador.");
   }
@@ -8597,7 +8716,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=91", { updateViaCache: "none" })
+      .register("service-worker.js?v=92", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
