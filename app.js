@@ -5617,9 +5617,8 @@ function updateCutToolContext() {
     : (compact ? "Finalizar" : "Finalizar remoção");
   elements.cutButtonLabel.textContent = audioTarget ? `${action} áudio` : action;
   elements.cutSelectedAudioLabel.textContent = audioTarget ? `${action} áudio` : "Remover trecho de áudio";
-  elements.splitClipLabel.textContent = selected?.type === "audio"
-    ? (compact ? "Dividir áudio" : "Dividir áudio no cursor")
-    : (compact ? "Dividir" : "Dividir no cursor");
+  elements.splitClipLabel.textContent = compact ? "Dividir" : "Dividir vídeo no cursor";
+  elements.splitClipButton.disabled = !elements.video.src || !["sequence", "video"].includes(selected?.type);
   elements.cutButton.classList.toggle("audio-target", audioTarget);
   elements.cutSelectedAudioButton.classList.toggle("marking", state.cutStart !== null && audioTarget);
   elements.transitionPalette.querySelectorAll('[data-video-transition="flash"], [data-video-transition="zoom"]')
@@ -5648,20 +5647,30 @@ function releaseClipRuntime(clip) {
   state.audioTrackNodes.delete(clip.id);
 }
 
-async function splitSelectedClipAtPlayhead() {
+async function splitSelectedClipAtPlayhead(allowedTypes = ["sequence", "video"]) {
   const clip = selectedMediaClip();
-  if (!clip || !["sequence", "video", "audio", "image"].includes(clip.type)) {
-    showToast("Selecione um clipe de vídeo, áudio ou imagem para dividir.");
+  if (!clip || !allowedTypes.includes(clip.type)) {
+    showToast(allowedTypes.includes("audio")
+      ? "Selecione um áudio na track para dividir."
+      : "Selecione o vídeo que deseja dividir na track.");
     return;
   }
   const time = projectCurrentTime();
-  const start = clip.start;
-  const end = clip.type === "sequence" ? clip.end : clipEffectiveEnd(clip);
+  const selectedSegment = selectedSegmentForClip(clip);
+  const start = selectedSegment.start;
+  const end = selectedSegment.end;
   if (time <= start + 0.08 || time >= end - 0.08 || clipHasOpenGap(clip, time)) {
     showToast("Posicione o cursor dentro da parte selecionada, longe das bordas.");
     return;
   }
-  if (state.cuts.some((cut) => (cut.targetKey || "base") === cutKeyForClip(clip))) {
+  const overlappingRemoval = state.cuts.some((cut) => (
+    !cut.junction
+    && !cut.layerMove
+    && (cut.targetKey || "base") === cutKeyForClip(clip)
+    && cut.end > start + 0.001
+    && cut.start < end - 0.001
+  ));
+  if (overlappingRemoval) {
     showToast("Desfaça as remoções desta parte antes de dividi-la.");
     return;
   }
@@ -8023,9 +8032,9 @@ elements.addCueButton.addEventListener("click", addCue);
 elements.syncNextButton.addEventListener("click", syncNextCueToPlayhead);
 elements.extendPreviousButton.addEventListener("click", extendPreviousCueToPlayhead);
 elements.cutButton.addEventListener("click", markCutAtPlayhead);
-elements.splitClipButton.addEventListener("click", splitSelectedClipAtPlayhead);
+elements.splitClipButton.addEventListener("click", () => splitSelectedClipAtPlayhead(["sequence", "video"]));
 elements.cutSelectedAudioButton.addEventListener("click", markCutAtPlayhead);
-elements.splitSelectedAudioButton.addEventListener("click", splitSelectedClipAtPlayhead);
+elements.splitSelectedAudioButton.addEventListener("click", () => splitSelectedClipAtPlayhead(["audio"]));
 elements.undoCutButton.addEventListener("click", undoLastCut);
 elements.magneticCuts.addEventListener("change", () => {
   saveLocalProject();
@@ -8483,8 +8492,33 @@ window.addEventListener("scroll", () => {
 }, { passive: true });
 window.addEventListener("resize", updateMobileTabFromScroll);
 
+function stepPlayheadByFrame(direction) {
+  if (!elements.video.src || !projectDuration()) return;
+  const frameRate = selectedExportFrameRate();
+  const currentFrame = direction > 0
+    ? Math.floor(projectCurrentTime() * frameRate + 0.001) + 1
+    : Math.ceil(projectCurrentTime() * frameRate - 0.001) - 1;
+  const target = clamp(currentFrame / frameRate, 0, projectDuration());
+  elements.video.pause();
+  seekProjectTime(target, false).catch(() => {});
+}
+
 document.addEventListener("keydown", (event) => {
-  const isTyping = event.target.matches("textarea, input, select");
+  if (event.defaultPrevented) return;
+  const isTyping = event.target.matches("textarea, input, select, [contenteditable='true']");
+  if (
+    window.innerWidth > 760
+    && !isTyping
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+    && ["ArrowLeft", "ArrowRight"].includes(event.key)
+    && elements.video.src
+  ) {
+    event.preventDefault();
+    stepPlayheadByFrame(event.key === "ArrowRight" ? 1 : -1);
+    return;
+  }
   if (!isTyping && ["Delete", "Backspace"].includes(event.key)) {
     if (selectedMediaClip()) {
       event.preventDefault();
@@ -8556,7 +8590,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=93", { updateViaCache: "none" })
+      .register("service-worker.js?v=94", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
