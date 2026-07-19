@@ -795,6 +795,28 @@ async function seekSecondaryMediaToProjectTime(time) {
   )));
 }
 
+function primeSecondaryMediaForPlayback(time) {
+  const activeMedia = [
+    ...state.overlayVideoClips
+      .filter((clip) => clipIsActiveAtTime(clip, time))
+      .flatMap((clip) => [[clip, clip.mediaElement], [clip, clip.audioElement]].filter(([, media]) => media)),
+    ...state.audioClips
+      .filter((clip) => clipIsActiveAtTime(clip, time))
+      .map((clip) => [clip, clip.audioElement]),
+  ];
+  activeMedia.forEach(([clip, media]) => {
+    const target = clamp(clipMediaTimeAtTimeline(clip, time), 0, media.duration || Infinity);
+    if (!media.seeking && Math.abs((media.currentTime || 0) - target) > 0.02) {
+      try {
+        media.currentTime = target;
+      } catch {
+        // Safari can reject a seek until metadata is ready; normal sync retries it.
+      }
+    }
+    media.playbackRate = clipPlaybackRate(clip);
+  });
+}
+
 async function seekProjectTime(time, autoplay = false) {
   state.projectEndSignaled = false;
   if (!state.sequenceClips.length) {
@@ -1753,6 +1775,13 @@ function createLutRenderer(canvas, preserveDrawingBuffer = false) {
     preserveDrawingBuffer,
   });
   if (!gl) throw new Error("Este navegador não oferece aceleração gráfica para LUTs.");
+  try {
+    gl.drawingBufferColorSpace = "srgb";
+    if ("unpackColorSpace" in gl) gl.unpackColorSpace = "srgb";
+  } catch {
+    // Older Safari versions already use sRGB as the WebGL default.
+  }
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
 
   const vertexShader = compileLutShader(gl, gl.VERTEX_SHADER, `
     attribute vec2 a_position;
@@ -1974,6 +2003,7 @@ function drawLutFrame(canvas, rendererKey, width, height, source = elements.vide
   }
   gl.viewport(0, 0, width, height);
   gl.useProgram(renderer.program);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, renderer.videoTexture);
@@ -3506,7 +3536,7 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
       const cell = state.gridCellCanvas;
       cell.width = cellWidth;
       cell.height = cellHeight;
-      const cellContext = cell.getContext("2d", { alpha: false });
+      const cellContext = srgb2dContext(cell);
       cellContext.fillStyle = "#000";
       cellContext.fillRect(0, 0, cellWidth, cellHeight);
       drawSourceCover(cellContext, source, 0, 0, cellWidth, cellHeight, focus);
@@ -4835,7 +4865,7 @@ async function createVideoThumbnail(video) {
   const canvas = document.createElement("canvas");
   canvas.width = 160;
   canvas.height = 90;
-  const context = canvas.getContext("2d", { alpha: false });
+  const context = srgb2dContext(canvas);
   const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
   const width = video.videoWidth * scale;
   const height = video.videoHeight * scale;
@@ -5381,6 +5411,9 @@ async function togglePlayback() {
       await seekProjectTime(0, false).catch(() => {});
     }
     const time = projectCurrentTime();
+    // Prime every companion before the first play call. This prevents iPhone
+    // from briefly showing a stale frame when a grid starts at the playhead.
+    primeSecondaryMediaForPlayback(time);
     const grid = activeVideoGrid(time);
     const gridIds = grid?.keys || new Set();
     const activeOverlays = state.overlayVideoClips.filter((clip) => clipIsActiveAtTime(clip, time));
@@ -6178,7 +6211,7 @@ function drawVideoFrame(context, width, height, source = elements.video, fixedTr
       state.fitCanvas.width = width;
       state.fitCanvas.height = height;
     }
-    const fitContext = state.fitCanvas.getContext("2d", { alpha: false });
+    const fitContext = srgb2dContext(state.fitCanvas);
     fitContext.fillStyle = "#000";
     fitContext.fillRect(0, 0, width, height);
     const scale = Math.min(width / sourceWidth, height / sourceHeight);
@@ -6517,8 +6550,8 @@ function drawCaptionFrame(context, width, height, time) {
 
 function supportedRecordingType() {
   // MediaRecorder encodes in real time. HEVC regularly falls behind on iPhone,
-  // producing a valid file with visibly missing frames. HDR/HEVC is handled by
-  // the deterministic WebCodecs exporter instead.
+  // producing a valid file with visibly missing frames. AVC is the stable SDR
+  // path shared by preview, LUT composition and export.
   const types = [
     "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
     "video/mp4",
@@ -6773,159 +6806,30 @@ function selectedExportFrameRate() {
 }
 
 function selectedExportColorMode() {
-  return elements.exportColorMode?.value === "hdr" ? "hdr" : "sdr";
+  return "sdr";
 }
 
-function prepareExportCanvas(width, height, colorMode = selectedExportColorMode()) {
+function srgb2dContext(canvas) {
+  try {
+    return canvas.getContext("2d", { alpha: false, colorSpace: "srgb", colorType: "unorm8" });
+  } catch {
+    return canvas.getContext("2d", { alpha: false });
+  }
+}
+
+function prepareExportCanvas(width, height) {
   let canvas = elements.renderCanvas;
-  if (canvas.dataset.colorMode && canvas.dataset.colorMode !== colorMode) {
+  if (canvas.dataset.colorMode && canvas.dataset.colorMode !== "sdr") {
     const replacement = canvas.cloneNode(false);
     canvas.replaceWith(replacement);
     elements.renderCanvas = replacement;
     canvas = replacement;
   }
-  canvas.dataset.colorMode = colorMode;
-  let context;
-  try {
-    context = canvas.getContext("2d", {
-      alpha: false,
-      colorSpace: colorMode === "hdr" ? "display-p3" : "srgb",
-      colorType: colorMode === "hdr" ? "float16" : "unorm8",
-    });
-  } catch {
-    context = canvas.getContext("2d", { alpha: false });
-  }
+  canvas.dataset.colorMode = "sdr";
+  const context = srgb2dContext(canvas);
   canvas.width = width;
   canvas.height = height;
-  const actualColorSpace = context?.getContextAttributes?.().colorSpace;
-  state.hdrCanvasSupported = colorMode !== "hdr" || actualColorSpace === "display-p3";
   return { canvas, context };
-}
-
-function createHlgFrameProcessor(width, height, sourceIsDisplayP3 = false) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const gl = canvas.getContext("webgl2", {
-    alpha: false,
-    antialias: false,
-    depth: false,
-    preserveDrawingBuffer: true,
-  });
-  if (!gl) return null;
-
-  const compileShader = (type, source) => {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      const message = gl.getShaderInfoLog(shader);
-      gl.deleteShader(shader);
-      throw new Error(message || "Falha ao preparar o conversor HDR.");
-    }
-    return shader;
-  };
-
-  try {
-    const vertex = compileShader(gl.VERTEX_SHADER, `#version 300 es
-      in vec2 a_position;
-      out vec2 v_uv;
-      void main() {
-        gl_Position = vec4(a_position, 0.0, 1.0);
-        v_uv = a_position * 0.5 + 0.5;
-      }`);
-    const fragment = compileShader(gl.FRAGMENT_SHADER, `#version 300 es
-      precision highp float;
-      uniform sampler2D u_frame;
-      uniform bool u_source_p3;
-      in vec2 v_uv;
-      out vec4 out_color;
-
-      vec3 to_linear(vec3 value) {
-        bvec3 low = lessThanEqual(value, vec3(0.04045));
-        vec3 linear_low = value / 12.92;
-        vec3 linear_high = pow((value + 0.055) / 1.055, vec3(2.4));
-        return mix(linear_high, linear_low, vec3(low));
-      }
-
-      float hlg(float value) {
-        const float a = 0.17883277;
-        const float b = 0.28466892;
-        const float c = 0.55991073;
-        value = max(0.0, value);
-        return value <= (1.0 / 12.0)
-          ? sqrt(3.0 * value)
-          : a * log(12.0 * value - b) + c;
-      }
-
-      void main() {
-        vec3 linear_rgb = to_linear(texture(u_frame, v_uv).rgb);
-        vec3 bt2020;
-        if (u_source_p3) {
-          bt2020.r = 0.753833 * linear_rgb.r + 0.198597 * linear_rgb.g + 0.047570 * linear_rgb.b;
-          bt2020.g = 0.045744 * linear_rgb.r + 0.941777 * linear_rgb.g + 0.012479 * linear_rgb.b;
-          bt2020.b = -0.001210 * linear_rgb.r + 0.017602 * linear_rgb.g + 0.983608 * linear_rgb.b;
-        } else {
-          bt2020.r = 0.627404 * linear_rgb.r + 0.329283 * linear_rgb.g + 0.043313 * linear_rgb.b;
-          bt2020.g = 0.069097 * linear_rgb.r + 0.919540 * linear_rgb.g + 0.011362 * linear_rgb.b;
-          bt2020.b = 0.016391 * linear_rgb.r + 0.088013 * linear_rgb.g + 0.895595 * linear_rgb.b;
-        }
-        // SDR graphics white must land at 75% HLG, not at the 1000-nit peak.
-        // This keeps LUT colors visually aligned with the SDR editor preview.
-        bt2020 *= 0.26496256;
-        out_color = vec4(hlg(bt2020.r), hlg(bt2020.g), hlg(bt2020.b), 1.0);
-      }`);
-    const program = gl.createProgram();
-    gl.attachShader(program, vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    gl.deleteShader(vertex);
-    gl.deleteShader(fragment);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      throw new Error(gl.getProgramInfoLog(program) || "Falha ao iniciar o conversor HDR.");
-    }
-
-    const position = gl.getAttribLocation(program, "a_position");
-    const sourceP3 = gl.getUniformLocation(program, "u_source_p3");
-    const buffer = gl.createBuffer();
-    const texture = gl.createTexture();
-    const pixels = new Uint8Array(width * height * 4);
-    gl.useProgram(program);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(position);
-    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.uniform1i(sourceP3, sourceIsDisplayP3 ? 1 : 0);
-    gl.viewport(0, 0, width, height);
-
-    return {
-      pixelsFrom(source) {
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        return pixels;
-      },
-      dispose() {
-        gl.deleteTexture(texture);
-        gl.deleteBuffer(buffer);
-        gl.deleteProgram(program);
-        canvas.width = 1;
-        canvas.height = 1;
-      },
-    };
-  } catch (error) {
-    console.warn("Conversor HDR HLG indisponível", error);
-    canvas.width = 1;
-    canvas.height = 1;
-    return null;
-  }
 }
 
 async function optimizedVideoEncoding(mediabunny, width, height, bitrate, frameRate) {
@@ -6938,26 +6842,9 @@ async function optimizedVideoEncoding(mediabunny, width, height, bitrate, frameR
     latencyMode: "quality",
   };
 
-  if (selectedExportColorMode() === "hdr") {
-    const preferredLevel = width >= 3840
-      ? (frameRate > 30 ? "L153" : "L150")
-      : (frameRate > 30 ? "L123" : "L120");
-    const hevcOptions = [...new Set([preferredLevel, "L153", "L150", "L123", "L120"])]
-      .map((level) => ({ ...common, fullCodecString: `hvc1.2.4.${level}.B0` }));
-    for (const options of hevcOptions) {
-      try {
-        if (await mediabunny.canEncodeVideo("hevc", options)) {
-          return { codec: "hevc", options, hdr: true };
-        }
-      } catch {
-        // Main 10 availability varies by iPhone generation and selected resolution.
-      }
-    }
-  }
-
   try {
     if (await mediabunny.canEncodeVideo("avc", common)) {
-      return { codec: "avc", options: common, hdr: false };
+      return { codec: "avc", options: common };
     }
   } catch {
     // The caller will use the compatible real-time exporter.
@@ -6972,8 +6859,7 @@ function exportVideoBitrate(preset, frameRate) {
       ? 12_000_000
       : 6_000_000;
   const frameRateFactor = frameRate === 60 ? 1.6 : frameRate === 24 ? 0.9 : 1;
-  const colorFactor = selectedExportColorMode() === "hdr" ? 1.25 : 1;
-  return Math.round(base * frameRateFactor * colorFactor);
+  return Math.round(base * frameRateFactor);
 }
 
 function mergedBaseRippleCuts(sourceDuration = Infinity) {
@@ -7105,7 +6991,7 @@ async function renderCaptionedVideoOptimized(preset) {
     input.dispose();
     return false;
   }
-  const { canvas, context } = prepareExportCanvas(width, height, videoEncoding.hdr ? "hdr" : "sdr");
+  const { canvas, context } = prepareExportCanvas(width, height);
 
   let audioMode = null;
   let audioSettings = null;
@@ -7170,15 +7056,6 @@ async function renderCaptionedVideoOptimized(preset) {
     showToast("O vídeo inteiro está dentro dos cortes.");
     return true;
   }
-  const hlgFrameProcessor = videoEncoding.hdr
-    ? createHlgFrameProcessor(width, height, state.hdrCanvasSupported)
-    : null;
-  if (videoEncoding.hdr && !hlgFrameProcessor) {
-    input.dispose();
-    showToast("HDR HLG não está disponível neste Safari; usando o exportador SDR compatível.");
-    return false;
-  }
-
   state.exportCanceled = false;
   state.exporting = true;
   state.isCutSeeking = false;
@@ -7188,10 +7065,7 @@ async function renderCaptionedVideoOptimized(preset) {
   elements.exportTitle.textContent = "Renderizando vídeo";
   elements.saveExportButton.hidden = true;
   elements.cancelExportButton.textContent = "Cancelar";
-  const exportColorDetail = videoEncoding.hdr ? "HDR HLG / HEVC Main10" : "SDR / AVC";
-  if (selectedExportColorMode() === "hdr" && !videoEncoding.hdr) {
-    showToast("HDR Main 10 não está disponível neste navegador; exportando em SDR sem perder quadros.");
-  }
+  const exportColorDetail = "SDR / AVC";
   elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${exportColorDetail} · preparando quadros`;
   elements.exportProgress.style.width = "0%";
   elements.exportPercent.textContent = "0%";
@@ -7216,17 +7090,11 @@ async function renderCaptionedVideoOptimized(preset) {
     });
     state.optimizedOutput = output;
 
-    const videoSource = hlgFrameProcessor
-      ? new mediabunny.VideoSampleSource({
-        codec: videoEncoding.codec,
-        ...videoEncoding.options,
-        keyFrameInterval: 2,
-      })
-      : new mediabunny.CanvasSource(canvas, {
+    const videoSource = new mediabunny.CanvasSource(canvas, {
       codec: videoEncoding.codec,
       ...videoEncoding.options,
       keyFrameInterval: 2,
-      });
+    });
     output.addVideoTrack(videoSource, { frameRate });
 
     let audioSource = null;
@@ -7314,29 +7182,7 @@ async function renderCaptionedVideoOptimized(preset) {
         drawImageOverlays(context, width, height, sourceTime, decodedGridSources);
         drawCaptionFrame(context, width, height, sourceTime);
         const encodeOptions = { keyFrame: frameIndex % Math.max(1, frameRate * 2) === 0 };
-        if (hlgFrameProcessor) {
-          const hdrSample = new mediabunny.VideoSample(hlgFrameProcessor.pixelsFrom(canvas), {
-            format: "RGBA",
-            codedWidth: width,
-            codedHeight: height,
-            timestamp: outputTime,
-            duration: frameDuration,
-            colorSpace: {
-              primaries: "bt2020",
-              transfer: "hlg",
-              matrix: "bt2020-ncl",
-              fullRange: true,
-            },
-            _doNotCopy: true,
-          });
-          try {
-            await videoSource.add(hdrSample, encodeOptions);
-          } finally {
-            hdrSample.close();
-          }
-        } else {
-          await videoSource.add(outputTime, frameDuration, encodeOptions);
-        }
+        await videoSource.add(outputTime, frameDuration, encodeOptions);
 
         frameIndex += 1;
         if (frameIndex === frameCount || frameIndex % Math.max(1, Math.round(frameRate / 4)) === 0) {
@@ -7453,7 +7299,6 @@ async function renderCaptionedVideoOptimized(preset) {
   } finally {
     state.exporting = false;
     state.optimizedOutput = null;
-    hlgFrameProcessor?.dispose();
     auxiliaryInputs.forEach((auxiliaryInput) => auxiliaryInput.dispose());
     input.dispose();
     if (state.wakeLock) {
@@ -7478,9 +7323,9 @@ async function renderCaptionedVideoRealtime(preset) {
   const { width, height } = outputDimensions(preset);
   const frameRate = selectedExportFrameRate();
   const colorMode = selectedExportColorMode();
-  // The real-time fallback deliberately uses SDR/AVC. HEVC MediaRecorder drops
-  // frames on iPhone under load; supported HDR projects use the path above.
-  const { canvas, context } = prepareExportCanvas(width, height, "sdr");
+  // The compatibility exporter also stays in SDR/AVC so Safari does not
+  // reinterpret LUT and caption colors while recording the composed canvas.
+  const { canvas, context } = prepareExportCanvas(width, height);
 
   const previousTime = projectCurrentTime();
   const previousMuted = elements.video.muted;
@@ -7529,9 +7374,6 @@ async function renderCaptionedVideoRealtime(preset) {
     const bitsPerSecond = exportVideoBitrate(preset, frameRate);
     const recorder = createCompatibleMediaRecorder(canvasStream, mimeType, bitsPerSecond);
     const recordingMimeType = recorder.mimeType || mimeType;
-    if (colorMode === "hdr" && (!state.hdrCanvasSupported || !/hvc1|hev1/i.test(recordingMimeType))) {
-      showToast("HDR não é preservado por este codificador; a exportação seguirá compatível em SDR.");
-    }
     const chunks = [];
     state.recorder = recorder;
 
@@ -7893,7 +7735,7 @@ function restoreLocalProject() {
     if (["video-720", "video-1080", "video-4k", "srt", "vtt", "json"].includes(data.exportFormat)) {
       elements.exportFormat.value = data.exportFormat;
     }
-    elements.exportColorMode.value = data.exportColorMode === "hdr" ? "hdr" : "sdr";
+    elements.exportColorMode.value = "sdr";
     state.videoGridMode = [2, 3, 4].includes(Number(data.videoGridMode)) ? Number(data.videoGridMode) : 1;
     state.videoGridClipIds = Array.isArray(data.videoGridClipIds) ? data.videoGridClipIds.filter((id) => typeof id === "string") : [];
     state.videoGridLayout = ["auto", "columns", "rows", "hero-left", "hero-top", "quad"].includes(data.videoGridLayout)
@@ -8556,9 +8398,7 @@ function updateExportPerformanceNotice() {
   saveLocalProject();
   const isIOS = isIOSDevice();
   const frameRate = Number(elements.exportFrameRate.value);
-  if (elements.exportColorMode.value === "hdr") {
-    showToast("HDR usa HLG, BT.2020 e HEVC Main 10 quando disponíveis; outros codificadores exportam em SDR compatível.");
-  } else if (isIOS && elements.exportFormat.value === "video-4k" && frameRate === 60) {
+  if (isIOS && elements.exportFormat.value === "video-4k" && frameRate === 60) {
     showToast("4K a 60 FPS exige muito do iPhone. 1080p a 60 FPS é mais estável.");
   } else if (isIOS && frameRate === 60) {
     showToast("60 FPS preserva vídeos mais fluidos, mas a exportação demora mais.");
@@ -8716,7 +8556,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=92", { updateViaCache: "none" })
+      .register("service-worker.js?v=93", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });

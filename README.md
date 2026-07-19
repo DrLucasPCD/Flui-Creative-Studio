@@ -70,14 +70,13 @@ O exportador oferece:
 - 720p, 1080p e até 4K, quando o dispositivo e o navegador suportarem;
 - 24, 30 ou 60 FPS;
 - proporções Original, 9:16, 16:9, 1:1 e 4:5;
-- SDR;
-- HDR com alvo HLG, usando HEVC Main 10 e sinalização BT.2020 quando disponível;
+- SDR/sRGB consistente entre prévia e arquivo final;
 - vídeo com legendas incorporadas;
 - formatos SRT, VTT e JSON para exportar as legendas separadamente.
 
 Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar quadro a quadro com timestamps constantes. O áudio é remontado offline a partir das trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém os quadros e o áudio sincronizados mesmo com múltiplos vídeos na grade.
 
-Se o navegador não oferecer os recursos necessários, o editor usa um caminho de compatibilidade em tempo real e informa o estado no modal de exportação. HDR depende de suporte do navegador, do dispositivo e da tela; em aparelhos sem suporte, a exportação volta para SDR para preservar a compatibilidade.
+Se o navegador não oferecer os recursos necessários, o editor usa um caminho de compatibilidade em tempo real e informa o estado no modal de exportação. A opção HDR experimental foi removida porque navegadores não preservam com segurança os metadados dinâmicos de Dolby Vision durante a composição em canvas; a exportação SDR mantém LUTs, filtros e cores das legendas previsíveis no iPhone e no desktop.
 
 ## Privacidade e armazenamento
 
@@ -88,7 +87,7 @@ Se o navegador não oferecer os recursos necessários, o editor usa um caminho d
 
 ## PWA e iPhone
 
-O editor funciona como Progressive Web App. No iPhone, a interface mantém prévia, controles, timeline, trilhas e painel de ferramentas em uma única tela, usando rolagem interna somente onde necessário. Também oferece prévia em tela cheia e controles de projeto para proporção, resolução, FPS e HDR.
+O editor funciona como Progressive Web App. No iPhone, a interface mantém prévia, controles, timeline, trilhas e painel de ferramentas em uma única tela, usando rolagem interna somente onde necessário. Também oferece prévia em tela cheia e controles de projeto para proporção, resolução e FPS.
 
 ## Executar localmente
 
