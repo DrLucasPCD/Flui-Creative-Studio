@@ -239,7 +239,7 @@ const state = {
   isCutSeeking: false,
   lut: null,
   lutPreviewRenderer: null,
-  lutExportRenderer: null,
+  lutExportSurfaces: new Map(),
   lutPresets: [],
   activeLutPresetId: null,
   lutIntensity: 100,
@@ -1703,12 +1703,12 @@ function compileLutShader(gl, type, source) {
   return shader;
 }
 
-function createLutRenderer(canvas) {
+function createLutRenderer(canvas, preserveDrawingBuffer = false) {
   const gl = canvas.getContext("webgl", {
     alpha: false,
     antialias: false,
     depth: false,
-    preserveDrawingBuffer: false,
+    preserveDrawingBuffer,
   });
   if (!gl) throw new Error("Este navegador não oferece aceleração gráfica para LUTs.");
 
@@ -1844,6 +1844,7 @@ function createLutRenderer(canvas) {
     adjustmentLocations: Object.fromEntries(
       Object.keys(DEFAULT_VIDEO_ADJUSTMENTS).map((name) => [name, gl.getUniformLocation(program, `u_${name}`)]),
     ),
+    preserveDrawingBuffer,
   };
 }
 
@@ -1893,13 +1894,34 @@ function setClipColorProfile(clip, changes) {
   }
 }
 
+function exportLutSurfaceForClip(clip) {
+  const key = clip?.id || "base";
+  let surface = state.lutExportSurfaces.get(key);
+  if (surface) return surface;
+  const canvas = document.createElement("canvas");
+  const safeKey = String(key).replace(/[^a-z0-9]/gi, "");
+  surface = { canvas, rendererKey: `lutExportRenderer_${safeKey || "base"}` };
+  state.lutExportSurfaces.set(key, surface);
+  return surface;
+}
+
+function renderExportColorFrame(source, clip, width, height, profile = colorProfileForClip(clip)) {
+  if (!colorProfileHasEffects(profile)) return source;
+  const surface = exportLutSurfaceForClip(clip);
+  return drawLutFrame(surface.canvas, surface.rendererKey, width, height, source, profile)
+    ? surface.canvas
+    : source;
+}
+
 function drawLutFrame(canvas, rendererKey, width, height, source = elements.video, profile = colorProfileForClip(activeSequenceClip())) {
   const sourceReady = source === elements.video
     ? elements.video.readyState >= 2
     : Boolean(source?.width || source?.videoWidth);
   const hasLut = Boolean(profile?.lut && Number(profile.intensity) > 0);
   if ((!hasLut && !profileHasVideoAdjustments(profile)) || !sourceReady) return false;
-  if (!state[rendererKey]) state[rendererKey] = createLutRenderer(canvas);
+  if (!state[rendererKey]) {
+    state[rendererKey] = createLutRenderer(canvas, rendererKey.startsWith("lutExportRenderer"));
+  }
   const renderer = state[rendererKey];
   const { gl } = renderer;
   if (canvas.width !== width || canvas.height !== height) {
@@ -1943,6 +1965,8 @@ function drawLutFrame(canvas, rendererKey, width, height, source = elements.vide
     gl.uniform1f(renderer.adjustmentLocations[name], (Number(value) || 0) / 100);
   });
   gl.drawArrays(gl.TRIANGLES, 0, 6);
+  if (renderer.preserveDrawingBuffer) gl.finish();
+  else gl.flush();
   return true;
 }
 
@@ -2006,7 +2030,6 @@ async function loadLut(file) {
     const lut = parseCubeLut(await file.text(), file.name);
     setClipColorProfile(target, { lut, presetId: null, intensity: 100 });
     state.lutPreviewRenderer = null;
-    state.lutExportRenderer = null;
     updateLutControls();
     drawLutPreview();
     saveLocalProject();
@@ -2094,7 +2117,6 @@ async function loadLutPreset(preset, trigger = null, target = filterTargetClip()
     lut.name = preset.name;
     setClipColorProfile(target, { lut, presetId: preset.id, intensity: colorProfileForClip(target).intensity || 100 });
     state.lutPreviewRenderer = null;
-    state.lutExportRenderer = null;
     updateLutControls();
     drawLutPreview();
     saveLocalProject();
@@ -3420,11 +3442,7 @@ function drawVideoGridFrame(context, width, height, time, baseSource = elements.
       cellContext.fillStyle = "#000";
       cellContext.fillRect(0, 0, cellWidth, cellHeight);
       drawSourceCover(cellContext, source, 0, 0, cellWidth, cellHeight, focus);
-      if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", cellWidth, cellHeight, cell, colorProfile)) {
-        source = elements.lutRenderCanvas;
-      } else {
-        source = cell;
-      }
+      source = renderExportColorFrame(cell, item.clip, cellWidth, cellHeight, colorProfile);
       focus = { x: 50, y: 50 };
     }
 
@@ -3455,9 +3473,7 @@ function drawImageOverlays(context, width, height, time, sourceOverrides = null)
         const scale = Math.min(1, Math.max(width, height) / Math.max(sourceWidth, sourceHeight));
         const filterWidth = Math.max(2, Math.round(sourceWidth * scale));
         const filterHeight = Math.max(2, Math.round(sourceHeight * scale));
-        if (drawLutFrame(elements.lutRenderCanvas, "lutExportRenderer", filterWidth, filterHeight, source, profile)) {
-          source = elements.lutRenderCanvas;
-        }
+        source = renderExportColorFrame(source, clip, filterWidth, filterHeight, profile);
       }
     }
     const motion = mediaClipAnimation(clip, time);
@@ -6086,15 +6102,7 @@ function drawVideoFrame(context, width, height, source = elements.video, fixedTr
     fitContext.drawImage(source, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
     preparedSource = state.fitCanvas;
   }
-  const hasLutFrame = drawLutFrame(
-    elements.lutRenderCanvas,
-    "lutExportRenderer",
-    width,
-    height,
-    preparedSource,
-    colorProfileForClip(colorClip),
-  );
-  const frameSource = hasLutFrame ? elements.lutRenderCanvas : preparedSource;
+  const frameSource = renderExportColorFrame(preparedSource, colorClip, width, height);
 
   if (transition?.type === "zoom" && progress < 1) {
     const scale = 1 + 0.09 * (1 - progress);
@@ -6561,6 +6569,14 @@ function releaseExportSurfaces() {
   elements.renderCanvas.height = 1;
   elements.lutRenderCanvas.width = 1;
   elements.lutRenderCanvas.height = 1;
+  state.lutExportSurfaces.forEach(({ canvas, rendererKey }) => {
+    const renderer = state[rendererKey];
+    renderer?.gl.getExtension("WEBGL_lose_context")?.loseContext();
+    delete state[rendererKey];
+    canvas.width = 1;
+    canvas.height = 1;
+  });
+  state.lutExportSurfaces.clear();
   if (state.fitCanvas) {
     state.fitCanvas.width = 1;
     state.fitCanvas.height = 1;
@@ -8578,7 +8594,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=89", { updateViaCache: "none" })
+      .register("service-worker.js?v=90", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
