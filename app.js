@@ -6306,15 +6306,16 @@ async function processCutsAtPlayhead() {
   }
 }
 
-async function processSequenceBoundaryAtPlayhead() {
-  if (state.isSequenceSwitching || state.activeSequenceIndex >= state.sequenceClips.length - 1) return false;
+async function processSequenceBoundaryAtPlayhead(forcePlayback = false) {
+  if (state.isSequenceSwitching) return true;
+  if (state.activeSequenceIndex >= state.sequenceClips.length - 1) return false;
   const clip = activeSequenceClip();
   if (!clip) return false;
   const mediaBoundary = (clip.sourceOffset || 0) + clipSourceSpan(clip);
   if ((elements.video.currentTime || 0) < mediaBoundary - 0.025) return false;
 
   state.isSequenceSwitching = true;
-  const wasPlaying = !elements.video.paused;
+  const shouldContinuePlayback = forcePlayback || !elements.video.paused || elements.video.ended || state.exporting;
   const next = state.sequenceClips[state.activeSequenceIndex + 1];
   const changingSource = elements.video.src !== next.url;
   const recorder = state.exporting ? state.recorder : null;
@@ -6330,7 +6331,7 @@ async function processSequenceBoundaryAtPlayhead() {
     }
     const target = next.sourceOffset || 0;
     if (changingSource || Math.abs((elements.video.currentTime || 0) - target) > 0.04) {
-      elements.video.currentTime = target;
+      await waitForMediaSeek(elements.video, target);
     }
     elements.video.volume = state.mainAudioGain ? 1 : clamp(next.volume ?? 1);
     if (state.mainAudioGain) state.mainAudioGain.gain.value = clamp(next.volume ?? 1, 0, 2);
@@ -6340,8 +6341,15 @@ async function processSequenceBoundaryAtPlayhead() {
       && cut.toClipId === next.id);
     if (junction?.transition && junction.transition !== "cut") triggerCutTransition(junction.transition);
     if (recorder?.state === "paused") await waitForRecorderChange(recorder, "resume", "resume");
-    if (wasPlaying || state.exporting) await elements.video.play().catch(() => {});
+    if (shouldContinuePlayback) {
+      primeSecondaryMediaForPlayback(next.start);
+      await elements.video.play();
+      updateMediaPreview();
+    }
     return true;
+  } catch (error) {
+    console.error("Falha ao continuar a sequência", error);
+    return false;
   } finally {
     state.isSequenceSwitching = false;
   }
@@ -8111,13 +8119,7 @@ elements.video.addEventListener("pause", () => {
 elements.video.addEventListener("ended", async (event) => {
   if (state.activeSequenceIndex < state.sequenceClips.length - 1) {
     event.stopImmediatePropagation();
-    const recorder = state.exporting ? state.recorder : null;
-    if (recorder?.state === "recording" && typeof recorder.pause === "function") {
-      await waitForRecorderChange(recorder, "pause", "pause");
-    }
-    await seekProjectTime(state.sequenceClips[state.activeSequenceIndex + 1].start, false).catch(() => {});
-    if (recorder?.state === "paused") await waitForRecorderChange(recorder, "resume", "resume");
-    await elements.video.play().catch(() => {});
+    await processSequenceBoundaryAtPlayhead(true);
     return;
   }
   stopPreviewMotion();
