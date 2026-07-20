@@ -276,6 +276,7 @@ const state = {
   activeAudioDropTarget: null,
   audioTrackNodes: new Map(),
   splitHistory: [],
+  undoInProgress: false,
   isSequenceSwitching: false,
   projectEndSignaled: false,
   videoGridMode: 1,
@@ -285,6 +286,7 @@ const state = {
   gridCellCanvas: null,
   draggingGridCell: null,
   timelineZoom: 1,
+  restoredVideoSignature: null,
 };
 
 const PROJECT_ASPECTS = Object.freeze({
@@ -802,6 +804,36 @@ function waitForVideoMetadata() {
     elements.video.addEventListener("loadedmetadata", resolve, { once: true });
     elements.video.addEventListener("error", () => reject(new Error("Não foi possível abrir este vídeo.")), { once: true });
   });
+}
+
+function videoFileSignature(file) {
+  if (!file) return null;
+  return `${file.name}:${file.size}:${file.lastModified || 0}`;
+}
+
+function waitForMediaCanPlay(media, timeout = 1800) {
+  if (media.readyState >= 3) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer;
+    const finish = () => {
+      clearTimeout(timer);
+      media.removeEventListener("canplay", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, timeout);
+    media.addEventListener("canplay", finish, { once: true });
+  });
+}
+
+async function continueSequencePlayback(projectTime) {
+  primeSecondaryMediaForPlayback(projectTime);
+  try {
+    await elements.video.play();
+  } catch {
+    await waitForMediaCanPlay(elements.video);
+    await elements.video.play();
+  }
+  updateMediaPreview();
 }
 
 function waitForMediaSeek(media, time, timeout = 1800) {
@@ -2633,7 +2665,11 @@ function stopPreviewMotion() {
 function loadVideo(file) {
   if (!file) return;
   cancelNarrationRecording();
-  const replacingExistingVideo = Boolean(state.videoFile);
+  const incomingSignature = videoFileSignature(file);
+  const currentSignature = videoFileSignature(state.videoFile);
+  const reopeningRestoredProject = !state.videoFile && state.restoredVideoSignature === incomingSignature;
+  const reopeningCurrentVideo = Boolean(state.videoFile) && currentSignature === incomingSignature;
+  const resetTimeline = !reopeningRestoredProject && !reopeningCurrentVideo;
   state.sequenceClips.forEach((clip) => URL.revokeObjectURL(clip.url));
   [...state.overlayVideoClips, ...state.imageClips, ...state.audioClips].forEach((clip) => {
     clip.audioElement?.pause();
@@ -2660,12 +2696,13 @@ function loadVideo(file) {
   state.splitHistory = [];
   state.hiddenVideoTrackIds.clear();
   state.hiddenAudioTrackIds.clear();
-  if (replacingExistingVideo) {
+  if (resetTimeline) {
     state.cuts = [];
     state.cues = [];
     state.activeCue = -1;
   }
   state.videoFile = file;
+  state.restoredVideoSignature = incomingSignature;
   state.videoUrl = URL.createObjectURL(file);
   state.videoName = file.name.replace(/\.[^.]+$/, "") || "legendas";
   state.sequenceClips = [{
@@ -2693,6 +2730,7 @@ function loadVideo(file) {
   elements.emptyVideo.hidden = true;
   setStatus("Carregando vídeo...");
   updateAutoCaptionAvailability();
+  saveLocalProject();
 }
 
 function allMediaClips() {
@@ -5533,7 +5571,9 @@ function setPlayerEnabled(enabled) {
   elements.addCueButton.disabled = !enabled;
   elements.cutButton.disabled = !enabled;
   elements.splitClipButton.disabled = !enabled;
-  elements.undoCutButton.disabled = !enabled || (state.cuts.length === 0 && state.splitHistory.length === 0);
+  elements.undoCutButton.disabled = state.undoInProgress
+    || !enabled
+    || (state.cuts.length === 0 && state.splitHistory.length === 0);
   updateScriptState();
 }
 
@@ -5990,7 +6030,8 @@ function renderCuts() {
   elements.cutLayer.replaceChildren();
   const duration = projectDuration() || 1;
   const editableCuts = state.cuts.filter((cut) => !cut.junction && !cut.layerMove);
-  elements.undoCutButton.disabled = editableCuts.length === 0 && state.splitHistory.length === 0;
+  elements.undoCutButton.disabled = state.undoInProgress
+    || (editableCuts.length === 0 && state.splitHistory.length === 0);
 
   editableCuts.forEach((cut) => {
     const region = document.createElement("div");
@@ -6139,7 +6180,13 @@ function markCutAtPlayhead() {
     : `${targetName} ficou vazia entre ${formatClock(start)} e ${formatClock(end)}.`);
 }
 
-function undoLastCut() {
+function undoLastCut(event) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  if (state.undoInProgress) return;
+  state.undoInProgress = true;
+  elements.undoCutButton.disabled = true;
+
   const latestCut = state.cuts
     .filter((cut) => !cut.junction && !cut.layerMove)
     .reduce((latest, cut) => (!latest || cut.sequence > latest.sequence ? cut : latest), null);
@@ -6181,9 +6228,17 @@ function undoLastCut() {
     updatePlayer();
     saveLocalProject();
     showToast("Divisão desfeita.");
+    window.setTimeout(() => {
+      state.undoInProgress = false;
+      renderCuts();
+    }, 350);
     return;
   }
-  if (!latestCut) return;
+  if (!latestCut) {
+    state.undoInProgress = false;
+    renderCuts();
+    return;
+  }
   if (latestCut.trimClipId) {
     const clip = state.sequenceClips.find((item) => item.id === latestCut.trimClipId);
     if (clip) {
@@ -6196,6 +6251,10 @@ function undoLastCut() {
   renderMediaTracks();
   saveLocalProject();
   showToast("Último corte desfeito.");
+  window.setTimeout(() => {
+    state.undoInProgress = false;
+    renderCuts();
+  }, 350);
 }
 
 function applyTransitionToCut(cutId, transition) {
@@ -6342,9 +6401,7 @@ async function processSequenceBoundaryAtPlayhead(forcePlayback = false) {
     if (junction?.transition && junction.transition !== "cut") triggerCutTransition(junction.transition);
     if (recorder?.state === "paused") await waitForRecorderChange(recorder, "resume", "resume");
     if (shouldContinuePlayback) {
-      primeSecondaryMediaForPlayback(next.start);
-      await elements.video.play();
-      updateMediaPreview();
+      await continueSequencePlayback(next.start);
     }
     return true;
   } catch (error) {
@@ -7924,6 +7981,7 @@ function saveLocalProject() {
     magneticCuts: elements.magneticCuts.checked,
     selectedVideoTransition: state.selectedVideoTransition,
     linkedTiming: elements.linkTiming.checked,
+    sourceVideoSignature: videoFileSignature(state.videoFile) || state.restoredVideoSignature,
   };
   try {
     localStorage.setItem("voz-em-legenda-project", JSON.stringify(data));
@@ -7936,6 +7994,7 @@ function restoreLocalProject() {
   try {
     const data = JSON.parse(localStorage.getItem("voz-em-legenda-project"));
     if (!data) return;
+    state.restoredVideoSignature = typeof data.sourceVideoSignature === "string" ? data.sourceVideoSignature : null;
     const migrateToEditorial = Number(data.captionDesignVersion) < EDITORIAL_DESIGN_VERSION;
     elements.scriptInput.value = data.script || "";
     elements.captionLength.value = data.captionLength || "balanced";
