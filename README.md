@@ -11,6 +11,7 @@ Editor de vídeo multifaixa com legendas sincronizadas, pensado para criação r
 - Adiciona arquivos diretamente na trilha escolhida pelo botão `+`.
 - Aceita vídeo, imagem, áudio e vídeo com áudio extraído para uma trilha de áudio.
 - Permite mover, duplicar, dividir, excluir e selecionar cada clipe individualmente.
+- Permite ampliar a timeline de `1x` a `8x`, mantendo o cursor como referência e exibindo mais quadros para ajustes precisos.
 - Exibe e oculta cada trilha separadamente.
 - Cria sobreposição quando dois clipes ocupam o mesmo intervalo da timeline.
 - Usa encaixe magnético para aproximar clipes e escolher transições em uma junção específica.
@@ -74,7 +75,7 @@ O exportador oferece:
 - vídeo com legendas incorporadas;
 - formatos SRT, VTT e JSON para exportar as legendas separadamente.
 
-Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar quadro a quadro com timestamps constantes. O áudio é remontado offline a partir das trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém os quadros e o áudio sincronizados mesmo com múltiplos vídeos na grade.
+Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar cada arquivo da sequência em uma única passagem, quadro a quadro e com timestamps constantes. O áudio é remontado offline a partir das trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém a barra de progresso, os quadros e o áudio sincronizados nas junções e também com múltiplos vídeos na grade.
 
 Se o navegador não oferecer os recursos necessários, o editor usa um caminho de compatibilidade em tempo real e informa o estado no modal de exportação. A opção HDR experimental foi removida porque navegadores não preservam com segurança os metadados dinâmicos de Dolby Vision durante a composição em canvas; a exportação SDR mantém LUTs, filtros e cores das legendas previsíveis no iPhone e no desktop.
 

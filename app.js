@@ -284,6 +284,7 @@ const state = {
   projectAspect: "source",
   gridCellCanvas: null,
   draggingGridCell: null,
+  timelineZoom: 1,
 };
 
 const PROJECT_ASPECTS = Object.freeze({
@@ -381,6 +382,23 @@ function composeEditorLayout() {
   elements.stage.prepend(previewColumn);
 
   const timelineHeading = elements.reviewEditor.querySelector(".timeline-heading");
+  const timelineZoomControls = document.createElement("div");
+  timelineZoomControls.className = "timeline-zoom-controls";
+  timelineZoomControls.innerHTML = `
+    <button type="button" data-timeline-zoom-step="-0.5" title="Diminuir zoom" aria-label="Diminuir zoom da timeline">−</button>
+    <input type="range" min="1" max="8" step="0.25" value="1" aria-label="Zoom da timeline" />
+    <button type="button" data-timeline-zoom-step="0.5" title="Aumentar zoom" aria-label="Aumentar zoom da timeline">＋</button>
+    <output>1×</output>`;
+  elements.reviewEditor.append(timelineZoomControls);
+  elements.timelineZoomControls = timelineZoomControls;
+  elements.timelineZoom = timelineZoomControls.querySelector('input[type="range"]');
+  elements.timelineZoomValue = timelineZoomControls.querySelector("output");
+  elements.timelineZoom.addEventListener("input", () => applyTimelineZoom(elements.timelineZoom.value));
+  timelineZoomControls.querySelectorAll("[data-timeline-zoom-step]").forEach((button) => {
+    button.addEventListener("click", () => {
+      applyTimelineZoom(state.timelineZoom + Number(button.dataset.timelineZoomStep));
+    });
+  });
   timelineHeading.after(elements.cutEditor, elements.mediaTimeline);
 
   const cutRow = document.createElement("div");
@@ -687,6 +705,36 @@ function composeEditorLayout() {
 }
 
 composeEditorLayout();
+
+function timelineBaseLaneWidth() {
+  const labelWidth = window.innerWidth <= 760 ? 112 : 124;
+  const minimum = window.innerWidth <= 760 ? 600 : 512;
+  return Math.max(minimum, elements.mediaTimeline.clientWidth - labelWidth - 24);
+}
+
+function applyTimelineZoom(value, preserveCursor = true) {
+  const lane = elements.sequenceTrackLane;
+  const scroller = elements.mediaTimeline;
+  if (!lane || !scroller) return;
+  const duration = Math.max(0.1, projectDuration() || 1);
+  const cursorRatio = clamp(projectCurrentTime() / duration);
+  const oldBounds = lane.getBoundingClientRect();
+  const oldAnchor = oldBounds.left + oldBounds.width * cursorRatio;
+  state.timelineZoom = clamp(Number(value) || 1, 1, 8);
+  const laneWidth = Math.round(timelineBaseLaneWidth() * state.timelineZoom);
+  scroller.style.setProperty("--timeline-lane-width", `${laneWidth}px`);
+  elements.timelineZoom.value = String(state.timelineZoom);
+  elements.timelineZoomValue.value = `${String(state.timelineZoom).replace(".", ",")}×`;
+  scroller.classList.toggle("timeline-zoomed", state.timelineZoom > 1.05);
+  requestAnimationFrame(() => {
+    if (preserveCursor) {
+      const newBounds = lane.getBoundingClientRect();
+      const newAnchor = newBounds.left + newBounds.width * cursorRatio;
+      scroller.scrollLeft += newAnchor - oldAnchor;
+    }
+    if (state.timelineZoom > 1.2) ensureTimelineFrames();
+  });
+}
 
 function refreshSequenceTiming() {
   let cursor = 0;
@@ -4215,6 +4263,25 @@ function attachClipTrimHandles(block, clip, type, duration, segment = null) {
   });
 }
 
+function decorateTimelineClipBlock(block, clip, labelText) {
+  if (clip.timelineFrames?.length) {
+    const strip = document.createElement("span");
+    strip.className = "timeline-frame-strip";
+    clip.timelineFrames.forEach((frame) => {
+      const thumbnail = document.createElement("i");
+      thumbnail.style.backgroundImage = `url("${frame}")`;
+      strip.append(thumbnail);
+    });
+    block.append(strip);
+  } else if (clip.thumbnail) {
+    block.style.backgroundImage = `url("${clip.thumbnail}")`;
+  }
+  const label = document.createElement("span");
+  label.className = "media-clip-label";
+  label.textContent = labelText;
+  block.append(label);
+}
+
 function mediaClipBlock(clip, type, duration, segment = null) {
   const displayStart = segment?.start ?? clip.start;
   const displayEnd = segment?.end ?? clip.end;
@@ -4226,8 +4293,7 @@ function mediaClipBlock(clip, type, duration, segment = null) {
   block.className = `media-clip-block ${type}${selected ? " selected" : ""}`;
   block.classList.toggle("split-start", Boolean(clip.splitFrom));
   block.dataset.clipId = clip.id;
-  block.textContent = clip.name;
-  if (clip.thumbnail) block.style.backgroundImage = `url("${clip.thumbnail}")`;
+  decorateTimelineClipBlock(block, clip, clip.name);
   block.style.left = `${clamp(displayStart / duration) * 100}%`;
   block.style.width = `${Math.max(1.5, clamp((displayEnd - displayStart) / duration) * 100)}%`;
   block.title = `${clip.name}: ${formatClock(displayStart)} a ${formatClock(displayEnd)}`;
@@ -4446,8 +4512,7 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
   block.dataset.clipId = clip.id;
   block.style.left = `${clamp(segment.start / duration) * 100}%`;
   block.style.width = `${Math.max(1.5, clamp((segment.end - segment.start) / duration) * 100)}%`;
-  block.textContent = `${index + 1} · ${clip.name}`;
-  if (clip.thumbnail) block.style.backgroundImage = `url("${clip.thumbnail}")`;
+  decorateTimelineClipBlock(block, clip, `${index + 1} · ${clip.name}`);
   block.title = `${clip.name} · volume ${Math.round((clip.volume ?? 1) * 100)}%`;
   const selectClip = () => {
     selectMediaClip(clip.id, true, segmentKey);
@@ -4919,6 +4984,39 @@ async function createVideoThumbnail(video) {
   const height = video.videoHeight * scale;
   context.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
   return canvas.toDataURL("image/jpeg", 0.68);
+}
+
+async function createTimelineFrames(clip) {
+  if (!clip?.url || clip.timelineFrames?.length || clip.timelineFramesLoading || !["sequence", "video"].includes(clip.type)) return;
+  clip.timelineFramesLoading = true;
+  let probe = null;
+  try {
+    probe = await loadVideoElement(clip.url, true);
+    const duration = Math.max(0.1, Number(probe.duration) || Number(clip.sourceDuration) || clipTimelineSpan(clip));
+    const frameCount = isIOSDevice() ? 6 : 10;
+    const frames = [];
+    for (let index = 0; index < frameCount; index += 1) {
+      const time = clamp((duration - 0.03) * index / Math.max(1, frameCount - 1), 0, Math.max(0, duration - 0.03));
+      await waitForMediaSeek(probe, time, 1200).catch(() => {});
+      const thumbnail = await createVideoThumbnail(probe);
+      if (thumbnail) frames.push(thumbnail);
+    }
+    if (frames.length) clip.timelineFrames = frames;
+  } catch {
+    // The existing cover thumbnail remains available if frame extraction is unsupported.
+  } finally {
+    clip.timelineFramesLoading = false;
+    if (probe) {
+      probe.removeAttribute("src");
+      probe.load();
+    }
+  }
+  renderMediaTracks();
+}
+
+function ensureTimelineFrames() {
+  [...state.sequenceClips, ...state.overlayVideoClips]
+    .forEach((clip) => createTimelineFrames(clip));
 }
 
 async function addSequenceVideos(files) {
@@ -6764,27 +6862,43 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
   const sampleRate = 44_100;
   const offline = new OfflineAudioContextClass(2, Math.max(1, Math.ceil(editedDuration * sampleRate)), sampleRate);
 
-  if (state.videoFile && hasBaseAudio) {
-    const baseBuffer = await offline.decodeAudioData(await state.videoFile.arrayBuffer());
-    const primaryClip = state.sequenceClips[0];
-    const visiblePrimaryRanges = primaryClip ? visibleSequenceSegments(primaryClip) : [];
-    const baseRanges = keptSourceSegments(sourceDuration).flatMap((kept) => (
-      visiblePrimaryRanges
-        .map((visible) => ({ start: Math.max(kept.start, visible.start), end: Math.min(kept.end, visible.end) }))
-        .filter((range) => range.end - range.start > 0.000001)
-    ));
-    baseRanges.forEach((segment) => {
-      const segmentDuration = Math.min(segment.end, baseBuffer.duration) - segment.start;
-      if (segmentDuration <= 0) return;
-      const source = offline.createBufferSource();
-      const gain = offline.createGain();
-      source.buffer = baseBuffer;
-      const outputStart = editedTime(segment.start);
-      scheduleClipGainAutomation(gain.gain, primaryClip, segment.start, segment.start + segmentDuration, outputStart, clipOutputVolume(primaryClip));
-      source.connect(gain);
-      gain.connect(offline.destination);
-      source.start(outputStart, segment.start, segmentDuration);
-    });
+  if (hasBaseAudio && trackIsVisible("video", "base")) {
+    for (const clip of state.sequenceClips) {
+      let buffer;
+      try {
+        buffer = await offline.decodeAudioData(await clip.file.arrayBuffer());
+      } catch {
+        continue;
+      }
+      const rate = clipPlaybackRate(clip);
+      const ranges = keptSourceSegments(sourceDuration).flatMap((kept) => (
+        visibleSequenceSegments(clip)
+          .map((visible) => ({ start: Math.max(kept.start, visible.start), end: Math.min(kept.end, visible.end) }))
+          .filter((range) => range.end - range.start > 0.000001)
+      ));
+      ranges.forEach((segment) => {
+        const mediaOffset = (clip.sourceOffset || 0) + (segment.start - clip.start) * rate;
+        const timelineDuration = segment.end - segment.start;
+        const mediaDuration = Math.min(timelineDuration * rate, buffer.duration - mediaOffset);
+        if (mediaDuration <= 0) return;
+        const source = offline.createBufferSource();
+        const gain = offline.createGain();
+        source.buffer = buffer;
+        source.playbackRate.value = rate;
+        const outputStart = editedTime(segment.start);
+        scheduleClipGainAutomation(
+          gain.gain,
+          clip,
+          segment.start,
+          segment.start + mediaDuration / rate,
+          outputStart,
+          clipOutputVolume(clip),
+        );
+        source.connect(gain);
+        gain.connect(offline.destination);
+        source.start(outputStart, mediaOffset, mediaDuration);
+      });
+    }
   }
 
   const mixTimelineClip = async (clip) => {
@@ -6838,7 +6952,7 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
 function optimizedPrimarySequenceAvailable() {
   const primary = state.sequenceClips[0];
   if (!primary?.file || primary.file !== state.videoFile) return false;
-  return state.sequenceClips.slice(1).every((clip) => visibleSequenceSegments(clip).length === 0);
+  return state.sequenceClips.every((clip) => clip.file && visibleSequenceSegments(clip).length > 0);
 }
 
 function waitForSeek(video) {
@@ -7054,7 +7168,8 @@ async function renderCaptionedVideoOptimized(preset) {
   let audioSettings = null;
   let audioDecoderConfig = null;
   const baseClip = state.sequenceClips[0];
-  const needsAudioMix = state.audioClips.some(clipTrackIsVisible)
+  const needsAudioMix = state.sequenceClips.length > 1
+    || state.audioClips.some(clipTrackIsVisible)
     || state.overlayVideoClips.some(clipTrackIsVisible);
   const baseOutputVolume = clipOutputVolume(baseClip);
   const needsBaseAudioProcessing = Math.abs(baseOutputVolume - 1) > 0.001 || clipHasFadeAutomation(baseClip);
@@ -7105,7 +7220,9 @@ async function renderCaptionedVideoOptimized(preset) {
     }
   }
 
-  const sourceDuration = await input.computeDuration();
+  const sourceDuration = state.sequenceClips.length > 1
+    ? projectDuration()
+    : await input.computeDuration();
   const editedDuration = keptSourceSegments(sourceDuration)
     .reduce((total, segment) => total + segment.end - segment.start, 0);
   if (editedDuration <= 0.01) {
@@ -7168,16 +7285,48 @@ async function renderCaptionedVideoOptimized(preset) {
     }
 
     await output.start();
-    const videoFirstTimestamp = await videoTrack.getFirstTimestamp();
     const audioFirstTimestamp = audioTrack ? await audioTrack.getFirstTimestamp() : 0;
     const frameCount = Math.max(1, Math.ceil(editedDuration * frameRate));
-    const frameTimes = Array.from({ length: frameCount }, (_, index) => {
-      const outputTime = index / frameRate;
-      return videoFirstTimestamp + sourceTimeAtEditedTime(outputTime, sourceDuration);
-    });
-    const videoSink = new mediabunny.CanvasSink(videoTrack, {
-      poolSize: 1,
-    });
+    const sequenceDecoders = [];
+    for (let clipIndex = 0; clipIndex < state.sequenceClips.length; clipIndex += 1) {
+      const clip = state.sequenceClips[clipIndex];
+      let clipInput = input;
+      let clipTrack = videoTrack;
+      if (clipIndex > 0) {
+        clipInput = new mediabunny.Input({
+          formats: mediabunny.ALL_FORMATS,
+          source: new mediabunny.BlobSource(clip.file, {
+            useStreamReader: true,
+            maxCacheSize: isIOSDevice() ? 2 * 1024 * 1024 : 4 * 1024 * 1024,
+          }),
+        });
+        auxiliaryInputs.push(clipInput);
+        clipTrack = await clipInput.getPrimaryVideoTrack();
+        if (!clipTrack || !(await clipTrack.canDecode())) {
+          throw new Error(`Não foi possível decodificar ${clip.name || "um vídeo da sequência"}.`);
+        }
+      }
+      const clipFirstTimestamp = await clipTrack.getFirstTimestamp();
+      const clipInputDuration = await clipInput.computeDuration();
+      const visibleSegments = visibleSequenceSegments(clip);
+      const frameIndices = [];
+      const timestamps = [];
+      for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        const timelineTime = sourceTimeAtEditedTime(frameIndex / frameRate, sourceDuration);
+        if (!visibleSegments.some((segment) => timelineTime >= segment.start && timelineTime < segment.end)) continue;
+        const mediaTime = (clip.sourceOffset || 0) + (timelineTime - clip.start) * clipPlaybackRate(clip);
+        frameIndices.push(frameIndex);
+        timestamps.push(clipFirstTimestamp + clamp(mediaTime, 0, Math.max(0, clipInputDuration - 0.000001)));
+      }
+      const sink = new mediabunny.CanvasSink(clipTrack, { poolSize: 1 });
+      sequenceDecoders.push({
+        clip,
+        frameIndices,
+        cursor: 0,
+        iterator: sink.canvasesAtTimestamps(timestamps)[Symbol.asyncIterator](),
+        lastFrame: null,
+      });
+    }
 
     const gridDecoders = [];
     if (state.videoGridMode > 1) {
@@ -7213,16 +7362,25 @@ async function renderCaptionedVideoOptimized(preset) {
     }
 
     const encodeVideo = async () => {
-      let frameIndex = 0;
-      let lastFrame = null;
-      for await (const wrapped of videoSink.canvasesAtTimestamps(frameTimes)) {
+      for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
         if (!state.exporting) throw new DOMException("Exportação cancelada", "AbortError");
-        if (wrapped) lastFrame = wrapped.canvas;
-        if (!lastFrame) throw new Error("Não foi possível decodificar o primeiro quadro do vídeo.");
-
         const outputTime = frameIndex / frameRate;
         const sourceTime = sourceTimeAtEditedTime(outputTime, sourceDuration);
         const frameDuration = 1 / frameRate;
+        const activeSequenceDecoder = sequenceDecoders.find((decoder) => (
+          decoder.frameIndices[decoder.cursor] === frameIndex
+        ));
+        if (activeSequenceDecoder) {
+          const decoded = await activeSequenceDecoder.iterator.next();
+          activeSequenceDecoder.cursor += 1;
+          if (!decoded.done && decoded.value) activeSequenceDecoder.lastFrame = decoded.value.canvas;
+        }
+        const activeBaseClip = activeSequenceDecoder?.clip
+          || state.sequenceClips.find((clip) => sourceTime >= clip.start && sourceTime < clip.end);
+        const baseFrame = activeSequenceDecoder?.lastFrame || null;
+        if (activeBaseClip && baseTrackVisibleAtTime(sourceTime) && !baseFrame) {
+          throw new Error(`Não foi possível decodificar um quadro de ${activeBaseClip.name || "um vídeo"}.`);
+        }
         const decodedGridSources = new Map();
         for (const decoder of gridDecoders) {
           const decoded = await decoder.iterator.next();
@@ -7231,9 +7389,9 @@ async function renderCaptionedVideoOptimized(preset) {
         }
         context.fillStyle = "#000000";
         context.fillRect(0, 0, width, height);
-        const drewGrid = drawVideoGridFrame(context, width, height, sourceTime, lastFrame, decodedGridSources);
-        if (!drewGrid && baseTrackVisibleAtTime(sourceTime)) {
-          drawVideoFrame(context, width, height, lastFrame, transitionAtEditedTime(outputTime), baseClip);
+        const drewGrid = drawVideoGridFrame(context, width, height, sourceTime, baseFrame, decodedGridSources);
+        if (!drewGrid && baseFrame && baseTrackVisibleAtTime(sourceTime)) {
+          drawVideoFrame(context, width, height, baseFrame, transitionAtEditedTime(outputTime), activeBaseClip);
           drawBaseFadeOverlay(context, width, height, sourceTime);
         }
         drawImageOverlays(context, width, height, sourceTime, decodedGridSources);
@@ -7241,10 +7399,10 @@ async function renderCaptionedVideoOptimized(preset) {
         const encodeOptions = { keyFrame: frameIndex % Math.max(1, frameRate * 2) === 0 };
         await videoSource.add(outputTime, frameDuration, encodeOptions);
 
-        frameIndex += 1;
-        if (frameIndex === frameCount || frameIndex % Math.max(1, Math.round(frameRate / 4)) === 0) {
+        const renderedFrames = frameIndex + 1;
+        if (renderedFrames === frameCount || renderedFrames % Math.max(1, Math.round(frameRate / 4)) === 0) {
           setExportProgress(
-            frameIndex / frameCount,
+            renderedFrames / frameCount,
             width,
             height,
             frameRate,
@@ -7261,7 +7419,11 @@ async function renderCaptionedVideoOptimized(preset) {
       if (!audioSource) return;
       if (audioMode === "mix") {
         elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · misturando trilhas de áudio`;
-        const mixedBuffer = await renderMixedAudioBuffer(sourceDuration, editedDuration, Boolean(audioTrack));
+        const mixedBuffer = await renderMixedAudioBuffer(
+          sourceDuration,
+          editedDuration,
+          state.sequenceClips.some((clip) => Boolean(clip.file)),
+        );
         if (!state.exporting) throw new DOMException("Exportação cancelada", "AbortError");
         await audioSource.add(mixedBuffer);
         return;
@@ -7445,11 +7607,13 @@ async function renderCaptionedVideoRealtime(preset) {
 
     let lastMediaTime = -Infinity;
     let nextRenderMediaTime = 0;
+    let highestRenderedProjectTime = 0;
     const renderFrame = () => {
       if (!state.exporting) return;
       context.fillStyle = "#000000";
       context.fillRect(0, 0, width, height);
       const currentProjectTime = projectCurrentTime();
+      highestRenderedProjectTime = Math.max(highestRenderedProjectTime, currentProjectTime);
       const baseGap = !trackIsVisible("video", "base")
         || state.cuts.some((cut) => isBaseCut(cut) && cut.ripple === false && currentProjectTime >= cut.start && currentProjectTime < cut.end);
       const drewGrid = drawVideoGridFrame(context, width, height, currentProjectTime);
@@ -7458,10 +7622,10 @@ async function renderCaptionedVideoRealtime(preset) {
       drawImageOverlays(context, width, height, currentProjectTime);
       drawCaptionFrame(context, width, height, currentProjectTime);
       const totalDuration = projectDuration();
-      const progress = totalDuration ? Math.min(100, (currentProjectTime / totalDuration) * 100) : 0;
+      const progress = totalDuration ? Math.min(100, (highestRenderedProjectTime / totalDuration) * 100) : 0;
       elements.exportProgress.style.width = `${progress}%`;
       elements.exportPercent.textContent = `${Math.round(progress)}%`;
-      elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${colorMode.toUpperCase()} · ${formatClock(currentProjectTime)} de ${formatClock(totalDuration)}`;
+      elements.exportStatus.textContent = `${width} × ${height} · ${frameRate} FPS · ${colorMode.toUpperCase()} · ${formatClock(highestRenderedProjectTime)} de ${formatClock(totalDuration)}`;
     };
 
     const scheduleFrame = () => {
@@ -8472,7 +8636,7 @@ elements.cancelExportButton.addEventListener("click", () => {
   state.exportCanceled = true;
   state.exporting = false;
   elements.video.pause();
-  if (state.recorder?.state !== "inactive") state.recorder.stop();
+  if (state.recorder && state.recorder.state !== "inactive") state.recorder.stop();
   if (optimizedOutput && optimizedOutput.state !== "canceled" && optimizedOutput.state !== "finalized") {
     optimizedOutput.cancel().catch(() => {});
   }
@@ -8539,6 +8703,7 @@ window.addEventListener("scroll", () => {
   if (!mobileTabFrame) mobileTabFrame = requestAnimationFrame(updateMobileTabFromScroll);
 }, { passive: true });
 window.addEventListener("resize", updateMobileTabFromScroll);
+window.addEventListener("resize", () => applyTimelineZoom(state.timelineZoom, false), { passive: true });
 
 let playheadStepSeconds = 0.2;
 
