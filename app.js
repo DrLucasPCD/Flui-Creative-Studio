@@ -552,7 +552,7 @@ function composeEditorLayout() {
     ["Áudio", "♫", "media"],
     ["Transições", "⋈", "media"],
     ["Configurações", "⚙", "color"],
-    ["Atalhos", "⌨", "script"],
+    ["Atalhos", "⌨", "shortcuts"],
   ];
   sideItems.forEach(([label, icon, target], index) => {
     const button = document.createElement("button");
@@ -561,6 +561,10 @@ function composeEditorLayout() {
     button.dataset.sideTarget = target;
     button.innerHTML = `<span aria-hidden="true">${icon}</span><small>${label}</small>`;
     button.addEventListener("click", () => {
+      if (target === "shortcuts") {
+        elements.shortcutsButton.click();
+        return;
+      }
       document.querySelector(`[data-tool-tab="${target}"]`)?.click();
       sideNav.querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
       elements.stage.classList.remove("mobile-menu-open");
@@ -9206,7 +9210,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=103", { updateViaCache: "none" })
+      .register("service-worker.js?v=104", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
