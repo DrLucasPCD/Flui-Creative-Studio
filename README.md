@@ -73,6 +73,8 @@ O exportador oferece:
 - proporções Original, 9:16, 16:9, 1:1 e 4:5;
 - SDR/sRGB consistente entre prévia e arquivo final;
 - vídeo com legendas incorporadas;
+- opção, ativada por padrão, para anexar o comercial do Flui Creative Studio ao final;
+- escolha automática do comercial vertical ou horizontal conforme a proporção final do projeto;
 - formatos SRT, VTT e JSON para exportar as legendas separadamente.
 
 Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar cada arquivo da sequência em uma única passagem, quadro a quadro e com timestamps constantes. O áudio é remontado offline a partir das trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém a barra de progresso, os quadros e o áudio sincronizados nas junções e também com múltiplos vídeos na grade.
@@ -112,6 +114,7 @@ O arquivo `netlify.toml` publica a raiz do projeto sem etapa de compilação. O 
 - `styles.css`: layout desktop, responsividade e interface do iPhone.
 - `app.js`: estado do projeto, timeline, prévia, legendas, filtros, áudio e exportação.
 - `filters/`: catálogo e arquivos de filtros/LUT.
+- `assets/`: comerciais vertical e horizontal usados opcionalmente na exportação.
 - `vendor/`: dependências locais, incluindo Mediabunny para exportação.
 - `manifest.webmanifest`: configuração de instalação do PWA.
 - `service-worker.js`: cache offline e atualização da versão publicada.

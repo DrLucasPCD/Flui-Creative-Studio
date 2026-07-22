@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=99" />
+    <link rel="stylesheet" href="styles.css?v=101" />
   </head>
   <body>
     <header class="topbar">
@@ -544,13 +544,24 @@
 
     <div class="export-modal" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportTitle" hidden>
       <div class="export-dialog">
-        <span class="render-symbol" aria-hidden="true">●</span>
+        <span class="render-symbol" id="renderSymbol" aria-hidden="true">●</span>
         <h2 id="exportTitle">Renderizando vídeo</h2>
         <p id="exportStatus">Preparando quadros e áudio...</p>
-        <div class="render-progress" aria-hidden="true">
+        <div class="export-options" id="exportOptions" hidden>
+          <label class="export-commercial-option">
+            <input id="includeCommercial" type="checkbox" checked />
+            <span class="export-commercial-switch" aria-hidden="true"></span>
+            <span class="export-commercial-copy">
+              <strong>Adicionar comercial no final</strong>
+              <small id="commercialVariant">Versão escolhida automaticamente</small>
+            </span>
+          </label>
+        </div>
+        <div class="render-progress" id="renderProgress" aria-hidden="true">
           <span id="exportProgress"></span>
         </div>
         <strong id="exportPercent">0%</strong>
+        <button class="button button-primary start-export" id="startExportButton" type="button" hidden>Exportar vídeo</button>
         <button class="button button-primary save-export" id="saveExportButton" type="button" hidden>Salvar vídeo</button>
         <button class="button button-secondary cancel-export" id="cancelExportButton" type="button">Cancelar</button>
       </div>
@@ -559,6 +570,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=99"></script>
+    <script src="app.js?v=101"></script>
   </body>
 </html>

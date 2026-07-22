@@ -97,6 +97,12 @@ const elements = {
   exportStatus: document.querySelector("#exportStatus"),
   exportProgress: document.querySelector("#exportProgress"),
   exportPercent: document.querySelector("#exportPercent"),
+  renderSymbol: document.querySelector("#renderSymbol"),
+  renderProgress: document.querySelector("#renderProgress"),
+  exportOptions: document.querySelector("#exportOptions"),
+  includeCommercial: document.querySelector("#includeCommercial"),
+  commercialVariant: document.querySelector("#commercialVariant"),
+  startExportButton: document.querySelector("#startExportButton"),
   cancelExportButton: document.querySelector("#cancelExportButton"),
   saveExportButton: document.querySelector("#saveExportButton"),
   renderCanvas: document.querySelector("#renderCanvas"),
@@ -208,6 +214,7 @@ const state = {
   toastTimer: null,
   recorder: null,
   exporting: false,
+  exportPreparing: false,
   exportCanceled: false,
   audioContext: null,
   audioSource: null,
@@ -294,6 +301,19 @@ const PROJECT_ASPECTS = Object.freeze({
   "16:9": 16 / 9,
   "1:1": 1,
   "4:5": 4 / 5,
+});
+
+const COMMERCIAL_EXPORTS = Object.freeze({
+  vertical: {
+    url: "./assets/flui-commercial-vertical.mp4",
+    name: "Flui Creative Studio - comercial vertical.mp4",
+    label: "Vertical 9:16 · 10 segundos",
+  },
+  horizontal: {
+    url: "./assets/flui-commercial-horizontal.mp4",
+    name: "Flui Creative Studio - comercial horizontal.mp4",
+    label: "Horizontal 16:9 · 10 segundos",
+  },
 });
 
 let autoCaptionTranscriberPromise = null;
@@ -784,9 +804,60 @@ function baseTrackVisibleAtTime(time) {
   ));
 }
 
+function mediaElementStart(media) {
+  try {
+    if (!media?.seekable?.length) return null;
+    const start = Number(media.seekable.start(0));
+    return Number.isFinite(start) ? Math.max(0, start) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clipBrowserMediaStart(clip, media = null) {
+  const detected = mediaElementStart(media);
+  if (detected !== null) {
+    if (clip) clip.browserMediaStart = detected;
+    return detected;
+  }
+  return Math.max(0, Number(clip?.browserMediaStart) || 0);
+}
+
+function mediaElementPlayableDuration(media, clip = null) {
+  const start = clipBrowserMediaStart(clip, media);
+  try {
+    if (media?.seekable?.length) {
+      const end = Number(media.seekable.end(media.seekable.length - 1));
+      if (Number.isFinite(end) && end > start) return end - start;
+    }
+  } catch {
+    // Fall back to the metadata duration when Safari has not exposed ranges yet.
+  }
+  return Math.max(0, (Number(media?.duration) || 0) - start);
+}
+
+function updateClipBrowserTiming(clip, media) {
+  if (!clip || !media) return;
+  const detectedStart = mediaElementStart(media);
+  if (detectedStart === null) return;
+  const previousSourceDuration = Number(clip.sourceDuration) || Number(media.duration) || 0;
+  const previousFullSpan = Math.max(0, previousSourceDuration - (clip.sourceOffset || 0));
+  const canNormalizeDuration = clip.type === "sequence"
+    && !clip.splitFrom
+    && (!(Number(clip.duration) > 0) || Math.abs(Number(clip.duration) - previousFullSpan) < 0.12);
+  clip.browserMediaStart = detectedStart;
+  const playableDuration = mediaElementPlayableDuration(media, clip);
+  if (playableDuration > 0) clip.sourceDuration = playableDuration;
+  if (canNormalizeDuration && playableDuration > 0) {
+    clip.duration = Math.max(0, playableDuration - (clip.sourceOffset || 0));
+    clip.sourceSpan = clip.duration * clipPlaybackRate(clip);
+  }
+}
+
 function projectCurrentTime() {
   const clip = activeSequenceClip();
-  return (clip?.start || 0) + Math.max(0, (elements.video.currentTime || 0) - (clip?.sourceOffset || 0)) / clipPlaybackRate(clip);
+  const browserStart = clipBrowserMediaStart(clip, elements.video);
+  return (clip?.start || 0) + Math.max(0, (elements.video.currentTime || 0) - browserStart - (clip?.sourceOffset || 0)) / clipPlaybackRate(clip);
 }
 
 function sequenceLocationAt(time) {
@@ -871,7 +942,7 @@ async function seekSecondaryMediaToProjectTime(time) {
       .map((clip) => [clip, clip.audioElement]),
   ];
   await Promise.allSettled(activeMedia.map(([clip, media]) => (
-    waitForMediaSeek(media, clipMediaTimeAtTimeline(clip, time))
+    waitForMediaSeek(media, clipBrowserMediaTimeAtTimeline(clip, time, media))
   )));
 }
 
@@ -885,7 +956,7 @@ function primeSecondaryMediaForPlayback(time) {
       .map((clip) => [clip, clip.audioElement]),
   ];
   activeMedia.forEach(([clip, media]) => {
-    const target = clamp(clipMediaTimeAtTimeline(clip, time), 0, media.duration || Infinity);
+    const target = clamp(clipBrowserMediaTimeAtTimeline(clip, time, media), 0, media.duration || Infinity);
     if (!media.seeking && Math.abs((media.currentTime || 0) - target) > 0.02) {
       try {
         media.currentTime = target;
@@ -915,8 +986,12 @@ async function seekProjectTime(time, autoplay = false) {
   if (state.mainAudioGain) state.mainAudioGain.gain.value = clamp(clip.volume ?? 1, 0, 2);
   elements.video.playbackRate = clipPlaybackRate(clip);
   const projectTime = clamp(time, 0, projectDuration());
-  const mediaTime = (clip.sourceOffset || 0) + localTime * clipPlaybackRate(clip);
+  const mediaTime = clipBrowserMediaStart(clip, elements.video)
+    + (clip.sourceOffset || 0)
+    + localTime * clipPlaybackRate(clip);
   await waitForMediaSeek(elements.video, mediaTime);
+  updateClipBrowserTiming(clip, elements.video);
+  refreshSequenceTiming();
   await seekSecondaryMediaToProjectTime(projectTime);
   if (autoplay) await elements.video.play().catch(() => {});
   updatePlayer();
@@ -1721,6 +1796,10 @@ function clipSourceSpan(clip) {
 function clipMediaTimeAtTimeline(clip, time) {
   const timelineOffset = Math.max(0, clipSourceTimeAtTimeline(clip, time) - clip.start);
   return (clip.sourceOffset || 0) + timelineOffset * clipPlaybackRate(clip);
+}
+
+function clipBrowserMediaTimeAtTimeline(clip, time, media = null) {
+  return clipBrowserMediaStart(clip, media) + clipMediaTimeAtTimeline(clip, time);
 }
 
 function applyPlaybackRateToClip(clip, rate) {
@@ -3121,6 +3200,18 @@ function projectAspectRatio() {
   return PROJECT_ASPECTS[state.projectAspect] || sourceProjectAspectRatio();
 }
 
+function commercialExportVariant() {
+  return projectAspectRatio() <= 1 ? "vertical" : "horizontal";
+}
+
+function updateCommercialVariantLabel() {
+  if (!elements.commercialVariant) return;
+  const commercial = COMMERCIAL_EXPORTS[commercialExportVariant()];
+  elements.commercialVariant.textContent = elements.includeCommercial.checked
+    ? `${commercial.label} · escolhido automaticamente`
+    : "O vídeo será exportado sem o comercial";
+}
+
 function updateProjectAspectControls() {
   const preset = PROJECT_ASPECTS[state.projectAspect] ? state.projectAspect : "source";
   const label = preset === "source" ? "Original" : preset;
@@ -3136,6 +3227,7 @@ function updateProjectAspectControls() {
   renderVideoGridPresets();
   updateMediaPreview();
   applyCaptionPositionStyles();
+  updateCommercialVariantLabel();
 }
 
 function setProjectAspect(preset) {
@@ -3451,7 +3543,7 @@ function syncOverlayVideoAudio(clip, time, shouldPlay) {
     setClipPreviewPlayback(clip, audioElement, false, "audio");
     return;
   }
-  const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, audioElement.duration || Infinity);
+  const localTime = clamp(clipBrowserMediaTimeAtTimeline(clip, time, audioElement), 0, audioElement.duration || Infinity);
   const drift = localTime - (audioElement.currentTime || 0);
   const hardSync = !clip.previewAudioWasActive || elements.video.paused || Math.abs(drift) > 0.45;
   if (hardSync && !audioElement.seeking && Math.abs(drift) > (elements.video.paused ? 0.015 : 0.08)) {
@@ -3559,7 +3651,7 @@ function updateMediaPreview(time = projectCurrentTime()) {
       clip.resizeHandle.style.top = `${clamp(clip.y + heightPercent / 2, 3, 97)}%`;
     }
     if (clip.type === "video") {
-      const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, clip.mediaElement.duration || Infinity);
+      const localTime = clamp(clipBrowserMediaTimeAtTimeline(clip, time, clip.mediaElement), 0, clip.mediaElement.duration || Infinity);
       const drift = localTime - (clip.mediaElement.currentTime || 0);
       const hardSyncThreshold = gridVideo ? 0.28 : 0.6;
       const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > hardSyncThreshold;
@@ -3685,7 +3777,7 @@ function syncAudioClips(time = projectCurrentTime()) {
       setClipPreviewPlayback(clip, audio, false);
       return;
     }
-    const localTime = clamp(clipMediaTimeAtTimeline(clip, time), 0, audio.duration || Infinity);
+    const localTime = clamp(clipBrowserMediaTimeAtTimeline(clip, time, audio), 0, audio.duration || Infinity);
     const drift = localTime - (audio.currentTime || 0);
     const hardSync = !clip.previewWasActive || elements.video.paused || Math.abs(drift) > 0.9;
     if (hardSync && !audio.seeking && Math.abs(drift) > (elements.video.paused ? 0.015 : 0.08)) audio.currentTime = localTime;
@@ -5067,10 +5159,13 @@ async function addSequenceVideos(files) {
     try {
       const probe = await loadVideoElement(url, true);
       const thumbnail = await createVideoThumbnail(probe);
+      const browserMediaStart = clipBrowserMediaStart(null, probe);
+      const playableDuration = mediaElementPlayableDuration(probe);
       state.sequenceClips.push({
         id: crypto.randomUUID(), type: "sequence", name: file.name, file, url,
-        duration: probe.duration, sourceDuration: probe.duration, width: probe.videoWidth, height: probe.videoHeight,
-        start: 0, end: 0, volume: 1, playbackRate: 1, sourceSpan: probe.duration, thumbnail,
+        duration: playableDuration, sourceDuration: playableDuration, browserMediaStart,
+        width: probe.videoWidth, height: probe.videoHeight,
+        start: 0, end: 0, volume: 1, playbackRate: 1, sourceSpan: playableDuration, thumbnail,
         lutIntensity: 100, videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
       });
       state.selectedMediaClipId = state.sequenceClips.at(-1).id;
@@ -5100,12 +5195,14 @@ async function addOverlayVideos(files, requestedTrackId = null, requestedStart =
     try {
       const mediaElement = await loadVideoElement(url, true);
       const audioElement = createClipAudioElement(url);
+      const browserMediaStart = clipBrowserMediaStart(null, mediaElement);
+      const playableDuration = mediaElementPlayableDuration(mediaElement);
       const start = cursor;
-      const end = start + mediaElement.duration;
+      const end = start + playableDuration;
       const clip = {
         id: crypto.randomUUID(), type: "video", name: file.name, file, url, mediaElement, audioElement,
         trackId, start, end, x: 50, y: 50, size: fittedOverlaySize(mediaElement), opacity: 1, animation: "none", volume: 1,
-        playbackRate: 1, sourceSpan: end - start,
+        playbackRate: 1, sourceSpan: end - start, browserMediaStart,
         lutIntensity: 100, videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
         thumbnail: await createVideoThumbnail(mediaElement),
       };
@@ -6370,7 +6467,7 @@ async function processSequenceBoundaryAtPlayhead(forcePlayback = false) {
   if (state.activeSequenceIndex >= state.sequenceClips.length - 1) return false;
   const clip = activeSequenceClip();
   if (!clip) return false;
-  const mediaBoundary = (clip.sourceOffset || 0) + clipSourceSpan(clip);
+  const mediaBoundary = clipBrowserMediaStart(clip, elements.video) + (clip.sourceOffset || 0) + clipSourceSpan(clip);
   if ((elements.video.currentTime || 0) < mediaBoundary - 0.025) return false;
 
   state.isSequenceSwitching = true;
@@ -6388,7 +6485,9 @@ async function processSequenceBoundaryAtPlayhead(forcePlayback = false) {
       elements.video.src = next.url;
       await waitForVideoMetadata();
     }
-    const target = next.sourceOffset || 0;
+    updateClipBrowserTiming(next, elements.video);
+    refreshSequenceTiming();
+    const target = clipBrowserMediaStart(next, elements.video) + (next.sourceOffset || 0);
     if (changingSource || Math.abs((elements.video.currentTime || 0) - target) > 0.04) {
       await waitForMediaSeek(elements.video, target);
     }
@@ -7179,6 +7278,91 @@ function trimmedAudioBuffer(wrapped, rangeStart, rangeEnd) {
   return trimmed;
 }
 
+function openExportPreflight() {
+  updateCommercialVariantLabel();
+  elements.exportModal.hidden = false;
+  elements.exportTitle.textContent = "Finalizar vídeo";
+  elements.exportStatus.textContent = "Revise esta opção antes de começar a exportação.";
+  elements.exportOptions.hidden = false;
+  elements.renderSymbol.hidden = true;
+  elements.renderProgress.hidden = true;
+  elements.exportPercent.hidden = true;
+  elements.startExportButton.hidden = false;
+  elements.startExportButton.disabled = false;
+  elements.saveExportButton.hidden = true;
+  elements.cancelExportButton.textContent = "Cancelar";
+}
+
+function showExportRenderingUi() {
+  elements.exportOptions.hidden = true;
+  elements.renderSymbol.hidden = false;
+  elements.renderProgress.hidden = false;
+  elements.exportPercent.hidden = false;
+  elements.startExportButton.hidden = true;
+  elements.startExportButton.disabled = false;
+}
+
+async function appendCommercialForExport() {
+  const commercial = COMMERCIAL_EXPORTS[commercialExportVariant()];
+  const response = await fetch(commercial.url, { cache: "force-cache" });
+  if (!response.ok) throw new Error("Não foi possível carregar o comercial.");
+  const blob = await response.blob();
+  const file = new File([blob], commercial.name, { type: blob.type || "video/mp4" });
+  const url = URL.createObjectURL(file);
+  let probe;
+  try {
+    probe = await loadVideoElement(url, true);
+    const browserMediaStart = clipBrowserMediaStart(null, probe);
+    const duration = mediaElementPlayableDuration(probe) || 10;
+    const clip = {
+      id: crypto.randomUUID(),
+      type: "sequence",
+      name: commercial.name,
+      file,
+      url,
+      duration,
+      sourceDuration: duration,
+      width: probe.videoWidth,
+      height: probe.videoHeight,
+      start: 0,
+      end: 0,
+      volume: 1,
+      playbackRate: 1,
+      sourceSpan: duration,
+      browserMediaStart,
+      lut: null,
+      lutPresetId: null,
+      lutIntensity: 0,
+      videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
+      exportCommercial: true,
+    };
+    state.sequenceClips.push(clip);
+    refreshSequenceTiming();
+    return clip;
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  } finally {
+    if (probe) {
+      probe.removeAttribute("src");
+      probe.load();
+    }
+  }
+}
+
+async function removeCommercialAfterExport(clip, restoreTime) {
+  if (!clip) return;
+  const commercialWasActive = elements.video.currentSrc === clip.url || elements.video.src === clip.url;
+  state.sequenceClips = state.sequenceClips.filter((item) => item.id !== clip.id);
+  refreshSequenceTiming();
+  state.activeSequenceIndex = clamp(state.activeSequenceIndex, 0, Math.max(0, state.sequenceClips.length - 1));
+  if (commercialWasActive && state.sequenceClips.length) {
+    await seekProjectTime(clamp(restoreTime, 0, Math.max(0, projectDuration() - 0.001)), false).catch(() => {});
+  }
+  URL.revokeObjectURL(clip.url);
+  updatePlayer();
+}
+
 function setExportProgress(progress, width, height, frameRate, currentTime, duration, detail = "quadros precisos") {
   const percent = clamp(progress * 100, 0, 100);
   elements.exportProgress.style.width = `${percent}%`;
@@ -7295,7 +7479,7 @@ async function renderCaptionedVideoOptimized(preset) {
     showToast("O vídeo inteiro está dentro dos cortes.");
     return true;
   }
-  state.exportCanceled = false;
+  if (state.exportCanceled) throw new DOMException("Exportação cancelada", "AbortError");
   state.exporting = true;
   state.isCutSeeking = false;
   state.keepExportModalOpen = false;
@@ -7622,7 +7806,7 @@ async function renderCaptionedVideoRealtime(preset) {
   let exportFrameRequestType = null;
   let stopRecorder = null;
   let canvasStream = null;
-  state.exportCanceled = false;
+  if (state.exportCanceled) return;
   state.exporting = true;
   state.isCutSeeking = false;
   elements.exportButton.disabled = true;
@@ -7810,14 +7994,38 @@ async function renderCaptionedVideoRealtime(preset) {
 
 async function renderCaptionedVideo(preset) {
   state.pendingExport = null;
+  state.exportCanceled = false;
+  state.exportPreparing = true;
+  elements.exportButton.disabled = true;
+  const restoreTime = projectCurrentTime();
+  let commercialClip = null;
+  showExportRenderingUi();
   try {
-    if (await renderCaptionedVideoOptimized(preset)) return;
-  } catch (error) {
-    console.error(error);
+    if (elements.includeCommercial.checked) {
+      elements.exportTitle.textContent = "Preparando comercial";
+      elements.exportStatus.textContent = `${COMMERCIAL_EXPORTS[commercialExportVariant()].label} · carregando`;
+      try {
+        commercialClip = await appendCommercialForExport();
+      } catch (error) {
+        if (error?.name === "AbortError" || state.exportCanceled) return;
+        console.error(error);
+        showToast("O comercial não pôde ser carregado. Exportando apenas o projeto.");
+      }
+    }
     if (state.exportCanceled) return;
-    showToast("Este iPhone usará o modo de exportação compatível.");
+    try {
+      if (await renderCaptionedVideoOptimized(preset)) return;
+    } catch (error) {
+      console.error(error);
+      if (state.exportCanceled) return;
+      showToast("Este iPhone usará o modo de exportação compatível.");
+    }
+    await renderCaptionedVideoRealtime(preset);
+  } finally {
+    state.exportPreparing = false;
+    await removeCommercialAfterExport(commercialClip, restoreTime);
+    elements.exportButton.disabled = !elements.video.src;
   }
-  await renderCaptionedVideoRealtime(preset);
 }
 
 function editedTime(sourceTime) {
@@ -7922,6 +8130,7 @@ async function exportProject() {
         videoGridClipIds: state.videoGridClipIds,
         videoGridLayout: state.videoGridLayout,
         projectAspect: state.projectAspect,
+        includeCommercial: elements.includeCommercial.checked,
         exportColorMode: selectedExportColorMode(),
         exportFrameRate: Number(elements.exportFrameRate.value),
         lut: state.lut
@@ -7975,6 +8184,7 @@ function saveLocalProject() {
     videoGridClipIds: state.videoGridClipIds,
     videoGridLayout: state.videoGridLayout,
     projectAspect: state.projectAspect,
+    includeCommercial: elements.includeCommercial.checked,
     lutIntensity: state.lutIntensity,
     lutPresetId: state.activeLutPresetId,
     cuts: state.cuts,
@@ -8030,6 +8240,7 @@ function restoreLocalProject() {
       ? data.videoGridLayout
       : "auto";
     state.projectAspect = PROJECT_ASPECTS[data.projectAspect] ? data.projectAspect : "source";
+    elements.includeCommercial.checked = data.includeCommercial !== false;
     updateVideoGridButtons();
     updateProjectAspectControls();
     state.lutIntensity = clamp(Number(data.lutIntensity) || 100, 0, 100);
@@ -8121,10 +8332,7 @@ elements.removeLutButton.addEventListener("click", () => removeLut());
 elements.video.addEventListener("loadedmetadata", () => {
   const activeClip = activeSequenceClip();
   if (activeClip) {
-    activeClip.sourceDuration = elements.video.duration;
-    if (!(Number(activeClip.duration) > 0)) {
-      activeClip.duration = Math.max(0, elements.video.duration - (activeClip.sourceOffset || 0));
-    }
+    updateClipBrowserTiming(activeClip, elements.video);
     if (!(Number(activeClip.sourceSpan) > 0)) {
       activeClip.sourceSpan = activeClip.duration * clipPlaybackRate(activeClip);
     }
@@ -8675,7 +8883,27 @@ function deleteActiveCue() {
 
 elements.deleteActiveCueButton.addEventListener("click", deleteActiveCue);
 
-elements.exportButton.addEventListener("click", exportProject);
+elements.exportButton.addEventListener("click", () => {
+  if (elements.exportFormat.value.startsWith("video-")) {
+    openExportPreflight();
+    return;
+  }
+  exportProject();
+});
+elements.includeCommercial.addEventListener("change", () => {
+  updateCommercialVariantLabel();
+  saveLocalProject();
+});
+elements.startExportButton.addEventListener("click", async () => {
+  if (elements.startExportButton.disabled) return;
+  elements.startExportButton.disabled = true;
+  showExportRenderingUi();
+  try {
+    await exportProject();
+  } finally {
+    elements.startExportButton.disabled = false;
+  }
+});
 function updateExportPerformanceNotice() {
   saveLocalProject();
   const isIOS = isIOSDevice();
@@ -8692,7 +8920,11 @@ elements.exportFormat.addEventListener("change", updateExportPerformanceNotice);
 elements.exportFrameRate.addEventListener("change", updateExportPerformanceNotice);
 elements.exportColorMode.addEventListener("change", updateExportPerformanceNotice);
 elements.cancelExportButton.addEventListener("click", () => {
-  const wasExporting = Boolean(state.recorder || state.optimizedOutput);
+  if (!elements.exportOptions.hidden) {
+    elements.exportModal.hidden = true;
+    return;
+  }
+  const wasExporting = Boolean(state.exportPreparing || state.exporting || state.recorder || state.optimizedOutput);
   const optimizedOutput = state.optimizedOutput;
   state.exportCanceled = true;
   state.exporting = false;
@@ -8884,7 +9116,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=94", { updateViaCache: "none" })
+      .register("service-worker.js?v=101", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });

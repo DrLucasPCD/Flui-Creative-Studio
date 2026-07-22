@@ -1,12 +1,14 @@
-const CACHE_NAME = "flui-creative-studio-v99";
+const CACHE_NAME = "flui-creative-studio-v101";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/styles.css?v=99",
-  "/app.js?v=99",
+  "/styles.css?v=101",
+  "/app.js?v=101",
   "/vendor/mediabunny-1.48.1.min.mjs",
   "/manifest.webmanifest",
   "/filters/catalog.json",
+  "/assets/flui-commercial-vertical.mp4",
+  "/assets/flui-commercial-horizontal.mp4",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
