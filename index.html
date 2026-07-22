@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=101" />
+    <link rel="stylesheet" href="styles.css?v=103" />
   </head>
   <body>
     <header class="topbar">
@@ -72,6 +72,10 @@
         <select id="exportColorMode" class="select compact color-mode-select" aria-label="Faixa dinâmica da exportação">
           <option value="sdr" selected>SDR fiel</option>
         </select>
+        <button class="button button-secondary shortcuts-button" id="shortcutsButton" type="button" aria-haspopup="dialog" aria-controls="shortcutsModal" title="Ver atalhos do teclado">
+          <span aria-hidden="true">⌨</span>
+          Atalhos
+        </button>
         <button class="button button-primary" id="exportButton" type="button" disabled>
           <span aria-hidden="true">↓</span>
           Exportar
@@ -567,9 +571,53 @@
       </div>
     </div>
 
+    <div class="shortcuts-modal" id="shortcutsModal" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle" hidden>
+      <section class="shortcuts-dialog">
+        <div class="shortcuts-heading">
+          <div>
+            <span aria-hidden="true">⌨</span>
+            <h2 id="shortcutsTitle">Atalhos do teclado</h2>
+          </div>
+          <button class="icon-button" id="closeShortcutsButton" type="button" aria-label="Fechar atalhos">×</button>
+        </div>
+        <dl class="shortcuts-list">
+          <div><dt><kbd>Espaço</kbd></dt><dd>Reproduzir ou pausar</dd></div>
+          <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Mover o cursor pelo tempo configurado</dd></div>
+          <div><dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Aumentar ou diminuir esse passo</dd></div>
+          <div><dt><kbd>S</kbd></dt><dd>Dividir o vídeo selecionado no cursor</dd></div>
+          <div><dt><kbd>D</kbd></dt><dd>Duplicar vídeo, imagem ou áudio selecionado</dd></div>
+          <div><dt><kbd>N</kbd></dt><dd>Adicionar nova mídia à track correspondente</dd></div>
+          <div><dt><kbd>E</kbd></dt><dd>Abrir as opções de exportação</dd></div>
+          <div><dt><kbd>L</kbd></dt><dd>Abrir a aba Legenda</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>Abrir a aba Revisão</dd></div>
+          <div><dt><kbd>&lt;</kbd></dt><dd>Iniciar a próxima legenda no cursor</dd></div>
+          <div><dt><kbd>&gt;</kbd></dt><dd>Estender a legenda anterior até o cursor</dd></div>
+          <div><dt><kbd>Delete</kbd></dt><dd>Excluir a mídia ou legenda selecionada</dd></div>
+          <div><dt><kbd>Option</kbd> + <kbd>setas</kbd></dt><dd>Reposicionar legenda ou enquadramento da grade</dd></div>
+          <div><dt><kbd>Shift</kbd> + <kbd>Option</kbd> + <kbd>setas</kbd></dt><dd>Mover a legenda em passos maiores</dd></div>
+        </dl>
+      </section>
+    </div>
+
+    <div class="shortcuts-modal" id="quickMediaModal" role="dialog" aria-modal="true" aria-labelledby="quickMediaTitle" hidden>
+      <section class="shortcuts-dialog quick-media-dialog">
+        <div class="shortcuts-heading">
+          <div>
+            <span aria-hidden="true">＋</span>
+            <h2 id="quickMediaTitle">Adicionar nova mídia</h2>
+          </div>
+          <button class="icon-button" id="closeQuickMediaButton" type="button" aria-label="Fechar menu de mídia">×</button>
+        </div>
+        <div class="quick-media-options">
+          <button type="button" data-quick-media="visual"><span aria-hidden="true">▣</span><strong>Vídeo ou imagem</strong><small>Adicionar à track de vídeo</small></button>
+          <button type="button" data-quick-media="audio"><span aria-hidden="true">♫</span><strong>Áudio / extrair áudio de vídeo</strong><small>Adicionar somente o áudio à track</small></button>
+        </div>
+      </section>
+    </div>
+
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=101"></script>
+    <script src="app.js?v=103"></script>
   </body>
 </html>

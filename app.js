@@ -84,6 +84,12 @@ const elements = {
   exportFormat: document.querySelector("#exportFormat"),
   exportFrameRate: document.querySelector("#exportFrameRate"),
   exportColorMode: document.querySelector("#exportColorMode"),
+  shortcutsButton: document.querySelector("#shortcutsButton"),
+  shortcutsModal: document.querySelector("#shortcutsModal"),
+  closeShortcutsButton: document.querySelector("#closeShortcutsButton"),
+  quickMediaModal: document.querySelector("#quickMediaModal"),
+  closeQuickMediaButton: document.querySelector("#closeQuickMediaButton"),
+  quickMediaButtons: document.querySelectorAll("[data-quick-media]"),
   projectAspectButton: document.querySelector("#projectAspectButton"),
   projectAspectLabel: document.querySelector("#projectAspectLabel"),
   projectAspectShape: document.querySelector("#projectAspectShape"),
@@ -8720,7 +8726,6 @@ elements.audioTrackInput.addEventListener("change", async (event) => {
   await addAudioClips(Array.from(event.target.files || []), trackId);
   event.target.value = "";
 });
-
 function updateSelectedClipTiming() {
   const clip = selectedMediaClip();
   if (!clip) return;
@@ -8883,6 +8888,43 @@ function deleteActiveCue() {
 
 elements.deleteActiveCueButton.addEventListener("click", deleteActiveCue);
 
+function closeShortcuts() {
+  elements.shortcutsModal.hidden = true;
+  elements.shortcutsButton.focus();
+}
+
+elements.shortcutsButton.addEventListener("click", () => {
+  elements.shortcutsModal.hidden = false;
+  elements.closeShortcutsButton.focus();
+});
+elements.closeShortcutsButton.addEventListener("click", closeShortcuts);
+elements.shortcutsModal.addEventListener("click", (event) => {
+  if (event.target === elements.shortcutsModal) closeShortcuts();
+});
+
+function closeQuickMedia() {
+  elements.quickMediaModal.hidden = true;
+}
+
+function openQuickMedia() {
+  elements.quickMediaModal.hidden = false;
+  elements.quickMediaButtons[0]?.focus();
+}
+
+elements.closeQuickMediaButton.addEventListener("click", closeQuickMedia);
+elements.quickMediaModal.addEventListener("click", (event) => {
+  if (event.target === elements.quickMediaModal) closeQuickMedia();
+});
+elements.quickMediaButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const targetInput = button.dataset.quickMedia === "audio"
+      ? elements.audioTrackInput
+      : elements.sequenceVideoInput;
+    closeQuickMedia();
+    targetInput.click();
+  });
+});
+
 elements.exportButton.addEventListener("click", () => {
   if (elements.exportFormat.value.startsWith("video-")) {
     openExportPreflight();
@@ -9013,8 +9055,56 @@ function changePlayheadStep(direction) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.shortcutsModal.hidden) {
+    event.preventDefault();
+    closeShortcuts();
+    return;
+  }
+  if (event.key === "Escape" && !elements.quickMediaModal.hidden) {
+    event.preventDefault();
+    closeQuickMedia();
+    return;
+  }
   const isTyping = event.target instanceof Element
     && event.target.matches("textarea, input, select, [contenteditable='true']");
+  if (!elements.shortcutsModal.hidden || !elements.quickMediaModal.hidden) return;
+  if (
+    window.innerWidth > 760
+    && !isTyping
+    && !event.repeat
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+    && elements.shortcutsModal.hidden
+    && elements.quickMediaModal.hidden
+  ) {
+    const key = event.key.toLowerCase();
+    if (["d", "n", "e", "l", "r", "<", ">"].includes(key)) {
+      event.preventDefault();
+      if (key === "d") {
+        if (selectedMediaClip()) duplicateSelectedMediaClip().catch((error) => showToast(error.message));
+        else showToast("Selecione um vídeo, imagem ou áudio para duplicar.");
+      } else if (key === "n") {
+        openQuickMedia();
+      } else if (key === "e") {
+        if (elements.video.src) elements.exportButton.click();
+        else showToast("Abra um vídeo antes de exportar.");
+      } else if (key === "l") {
+        elements.stage.classList.remove("tools-collapsed");
+        activateToolTab("caption");
+      } else if (key === "r") {
+        elements.stage.classList.remove("tools-collapsed");
+        activateToolTab("review");
+      } else if (key === "<") {
+        if (!elements.syncNextButton.disabled) elements.syncNextButton.click();
+        else showToast("Não há uma próxima legenda disponível.");
+      } else if (key === ">") {
+        if (!elements.extendPreviousButton.disabled) elements.extendPreviousButton.click();
+        else showToast("Não há uma legenda anterior disponível.");
+      }
+      return;
+    }
+  }
   if (
     window.innerWidth > 760
     && !isTyping
@@ -9116,7 +9206,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=101", { updateViaCache: "none" })
+      .register("service-worker.js?v=103", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
