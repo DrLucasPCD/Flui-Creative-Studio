@@ -5888,6 +5888,284 @@ body { padding: 10px; }
 
 }
 
+/* Editorial compositions: optional multi-part captions with independent timing and position. */
+.caption-composition-overlay {
+  position: absolute;
+  z-index: 18;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout paint;
+}
+
+.caption-composition-part {
+  position: absolute;
+  display: block;
+  width: max-content;
+  max-width: 84%;
+  padding: 0.08em 0.12em;
+  color: #fff;
+  font-family: "Helvetica Neue", Helvetica, Arial, Montserrat, Inter, sans-serif;
+  line-height: 1.04;
+  letter-spacing: 0;
+  text-align: center;
+  text-wrap: balance;
+  white-space: normal;
+  text-shadow: 0 0.11em 0.28em rgba(0, 0, 0, 0.5);
+  transform-origin: center;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.caption-composition-part.role-lead {
+  font-weight: 600;
+}
+
+.caption-composition-part.role-impact {
+  font-style: italic;
+  font-weight: 800;
+  line-height: 0.94;
+}
+
+.caption-composition-part.role-support {
+  font-weight: 500;
+}
+
+.caption-composition-part.selected {
+  outline: 1px dashed rgba(67, 221, 195, 0.9);
+  outline-offset: 0.16em;
+}
+
+.caption-composition-part.dragging {
+  cursor: grabbing;
+}
+
+.caption-composer {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #344044;
+  border-radius: 7px;
+  background: #11191c;
+}
+
+.caption-composer-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.caption-composer-heading > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.caption-composer-heading strong {
+  font-size: 11px;
+}
+
+.caption-composer-heading small {
+  overflow: hidden;
+  color: #96a2a2;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.caption-composer-heading button,
+.caption-composition-presets button,
+.caption-part-tabs button,
+.caption-part-position button,
+.caption-part-extend {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid #3a474a;
+  border-radius: 6px;
+  background: #182124;
+  color: #dce5e3;
+}
+
+.caption-composer-heading button {
+  min-height: 30px;
+  padding: 0 9px;
+  color: #ff9b91;
+  font-size: 9px;
+}
+
+.caption-composition-presets {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.caption-composition-presets button {
+  display: grid;
+  min-height: 48px;
+  align-content: center;
+  gap: 2px;
+  padding: 5px;
+  text-align: left;
+}
+
+.caption-composition-presets button strong {
+  font-size: 9px;
+}
+
+.caption-composition-presets button span {
+  overflow: hidden;
+  color: #8f9b9b;
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.caption-composition-presets button.active,
+.caption-part-tabs button.active {
+  border-color: #43ddc3;
+  background: #173b35;
+  color: #72ead5;
+}
+
+.caption-part-tabs {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.caption-part-tabs button {
+  min-height: 32px;
+  border-radius: 0;
+  font-size: 8px;
+}
+
+.caption-part-tabs button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.caption-part-tabs button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.caption-part-editor {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.caption-part-editor[hidden] {
+  display: none;
+}
+
+.caption-part-editor label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: #aeb8b7;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.caption-part-editor input {
+  width: 100%;
+  min-width: 0;
+}
+
+.caption-part-editor input[type="text"],
+.caption-part-editor input[type="number"] {
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid #3a474a;
+  border-radius: 6px;
+  background: #0b1114;
+  color: #f4f8f7;
+}
+
+.caption-part-text,
+.caption-part-editor label:has(#captionPartScale),
+.caption-part-position,
+.caption-part-extend {
+  grid-column: 1 / -1;
+}
+
+.caption-part-editor label:has(#captionPartScale) {
+  grid-template-columns: 48px minmax(0, 1fr) 40px;
+  align-items: center;
+}
+
+.caption-part-position {
+  display: grid;
+  grid-template-columns: 48px repeat(4, minmax(0, 1fr));
+  align-items: center;
+  gap: 4px;
+  color: #aeb8b7;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.caption-part-position button {
+  min-height: 32px;
+  font-size: 15px;
+}
+
+.caption-part-extend {
+  color: #71e7d1;
+  font-size: 9px;
+}
+
+.cue-track-block.has-composition::after {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  color: #8ff2df;
+  font-size: 9px;
+  content: "✦";
+}
+
+/* Reveal every existing style; Editorial automático remains the original one-word mode. */
+.editor-tools .caption-tools > .caption-presets button {
+  display: grid !important;
+}
+
+@media (max-width: 760px) {
+  .caption-composition-overlay {
+    z-index: 24;
+  }
+
+  .caption-composition-part {
+    max-width: 84%;
+  }
+
+  .caption-tools > .caption-presets {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .caption-tools > .caption-composer {
+    order: 2;
+  }
+
+  .caption-tools > .effectsbar {
+    order: 3;
+  }
+
+  .caption-tools > .caption-detail-row {
+    order: 4;
+  }
+
+  .caption-composition-presets {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 /* Filter browser: lightweight thumbnails, LUTs loaded only when selected. */
 .main-editor > .tool-tabs {
   grid-template-columns: repeat(6, minmax(64px, 92px));

@@ -43,6 +43,19 @@ const elements = {
   autoCaptionButton: document.querySelector("#autoCaptionButton"),
   autoCaptionLabel: document.querySelector("#autoCaptionLabel"),
   captionOverlay: document.querySelector("#captionOverlay"),
+  captionCompositionOverlay: document.querySelector("#captionCompositionOverlay"),
+  captionComposer: document.querySelector("#captionComposer"),
+  compositionPresetButtons: document.querySelectorAll("[data-composition-preset]"),
+  captionPartButtons: document.querySelectorAll("[data-caption-part]"),
+  captionPartEditor: document.querySelector("#captionPartEditor"),
+  captionPartText: document.querySelector("#captionPartText"),
+  captionPartStart: document.querySelector("#captionPartStart"),
+  captionPartEnd: document.querySelector("#captionPartEnd"),
+  captionPartScale: document.querySelector("#captionPartScale"),
+  captionPartScaleValue: document.querySelector("#captionPartScaleValue"),
+  captionPartMoveButtons: document.querySelectorAll("[data-caption-part-move]"),
+  extendCaptionPart: document.querySelector("#extendCaptionPart"),
+  removeCaptionComposition: document.querySelector("#removeCaptionComposition"),
   playButton: document.querySelector("#playButton"),
   playIcon: document.querySelector("#playIcon"),
   backButton: document.querySelector("#backButton"),
@@ -238,6 +251,9 @@ const state = {
   captionMode: "phrase",
   captionPreset: "editorial",
   captionTemplate: "editorial",
+  captionCompositions: [],
+  activeCaptionPart: "group",
+  draggingCaptionPart: null,
   draggingCaption: false,
   cuts: [],
   cutStart: null,
@@ -529,7 +545,7 @@ function composeEditorLayout() {
   captionAddButton.textContent = "+";
   captionAddButton.title = "Adicionar legenda no tempo atual";
   captionAddButton.setAttribute("aria-label", "Adicionar legenda no tempo atual");
-  captionAddButton.addEventListener("click", () => elements.addCueButton.click());
+  captionAddButton.addEventListener("click", addCue);
   captionLabel.append(captionAddButton);
 
   const toolTabs = elements.editorTools.querySelector(".tool-tabs");
@@ -1045,6 +1061,231 @@ function captionImpactWordIndex(text) {
   return winner;
 }
 
+const CAPTION_COMPOSITION_ROLES = ["lead", "impact", "support"];
+const CAPTION_COMPOSITION_PRESETS = Object.freeze({
+  stacked: {
+    vertical: {
+      lead: { x: 50, y: -7 }, impact: { x: 50, y: 0 }, support: { x: 50, y: 8 },
+    },
+    horizontal: {
+      lead: { x: 50, y: -7 }, impact: { x: 50, y: 0 }, support: { x: 50, y: 8 },
+    },
+    scales: { lead: 0.78, impact: 1.65, support: 0.7 },
+  },
+  hero: {
+    vertical: {
+      lead: { x: 50, y: 0 }, impact: { x: 50, y: -25 }, support: { x: 50, y: 9 },
+    },
+    horizontal: {
+      lead: { x: 50, y: 0 }, impact: { x: 76, y: -10 }, support: { x: 50, y: 9 },
+    },
+    scales: { lead: 0.82, impact: 1.82, support: 0.68 },
+  },
+  split: {
+    vertical: {
+      lead: { x: 40, y: -8 }, impact: { x: 58, y: 0 }, support: { x: 54, y: 9 },
+    },
+    horizontal: {
+      lead: { x: 36, y: -6 }, impact: { x: 63, y: 0 }, support: { x: 58, y: 8 },
+    },
+    scales: { lead: 0.76, impact: 1.55, support: 0.68 },
+  },
+});
+
+function compositionForCue(cue = state.cues[state.activeCue]) {
+  if (!cue) return null;
+  return state.captionCompositions.find((composition) => composition.cueId === cue.id) || null;
+}
+
+function compositionPart(composition, role = state.activeCaptionPart) {
+  if (!composition || role === "group") return null;
+  return composition.parts.find((part) => part.role === role) || null;
+}
+
+function compositionTextParts(text, preset) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return { lead: "", impact: "", support: "" };
+  const impactIndex = Math.max(0, captionImpactWordIndex(text));
+  const impact = words[impactIndex] || words[words.length - 1];
+  if (preset === "hero") {
+    return { lead: text.trim(), impact, support: "" };
+  }
+  return {
+    lead: words.slice(0, impactIndex).join(" "),
+    impact,
+    support: words.slice(impactIndex + 1).join(" "),
+  };
+}
+
+function defaultCompositionPosition(cue, preset, role, format) {
+  const base = captionPositionForDimensions(
+    format === "vertical" ? 1080 : 1920,
+    format === "vertical" ? 1920 : 1080,
+    cue,
+  );
+  const offset = CAPTION_COMPOSITION_PRESETS[preset][format][role];
+  return {
+    x: clamp(role === "impact" && preset === "hero" && format === "horizontal" ? offset.x : base.x + offset.x - 50, 4, 96),
+    y: clamp(base.y + offset.y, 3, 97),
+  };
+}
+
+function createCaptionComposition(preset = "stacked") {
+  const cue = state.cues[state.activeCue];
+  const definition = CAPTION_COMPOSITION_PRESETS[preset];
+  if (!cue || !definition) {
+    showToast("Selecione uma legenda para criar a composição.");
+    return;
+  }
+  const textParts = compositionTextParts(cue.text, preset);
+  const frameRate = Math.max(24, Number(elements.exportFrameRate.value) || 30);
+  const impactDelay = 2.5 / frameRate;
+  const previous = compositionForCue(cue);
+  const composition = {
+    id: previous?.id || crypto.randomUUID(),
+    cueId: cue.id,
+    preset,
+    parts: CAPTION_COMPOSITION_ROLES.map((role) => {
+      const oldPart = previous?.parts.find((part) => part.role === role);
+      return {
+        id: oldPart?.id || crypto.randomUUID(),
+        role,
+        text: textParts[role],
+        start: role === "impact" && (textParts.lead || textParts.support)
+          ? Math.min(cue.end - 0.05, cue.start + impactDelay)
+          : cue.start,
+        end: cue.end,
+        scale: definition.scales[role],
+        positions: {
+          vertical: defaultCompositionPosition(cue, preset, role, "vertical"),
+          horizontal: defaultCompositionPosition(cue, preset, role, "horizontal"),
+        },
+      };
+    }),
+  };
+  if (previous) state.captionCompositions.splice(state.captionCompositions.indexOf(previous), 1, composition);
+  else state.captionCompositions.push(composition);
+  state.activeCaptionPart = preset === "hero" ? "impact" : "group";
+  updateCaptionCompositionEditor();
+  updateCaption();
+  renderCues();
+  saveLocalProject();
+  showToast("Composição criada. Arraste cada parte no preview.");
+}
+
+function sanitizeCaptionCompositions(compositions) {
+  if (!Array.isArray(compositions)) return [];
+  const cueIds = new Set(state.cues.map((cue) => cue.id));
+  return compositions.flatMap((composition) => {
+    if (!composition || !cueIds.has(composition.cueId) || !CAPTION_COMPOSITION_PRESETS[composition.preset]) return [];
+    const parts = CAPTION_COMPOSITION_ROLES.flatMap((role) => {
+      const part = composition.parts?.find((item) => item?.role === role);
+      if (!part) return [];
+      const positions = {};
+      ["vertical", "horizontal"].forEach((format) => {
+        const position = part.positions?.[format] || { x: 50, y: 50 };
+        positions[format] = {
+          x: clamp(Number(position.x) || 50, 3, 97),
+          y: clamp(Number(position.y) || 50, 3, 97),
+        };
+      });
+      return [{
+        id: typeof part.id === "string" ? part.id : crypto.randomUUID(),
+        role,
+        text: String(part.text || "").slice(0, 120),
+        start: Math.max(0, Number(part.start) || 0),
+        end: Math.max(Number(part.start) + 0.05, Number(part.end) || 0.05),
+        scale: clamp(Number(part.scale) || 1, 0.5, 2.2),
+        positions,
+      }];
+    });
+    if (parts.length !== CAPTION_COMPOSITION_ROLES.length) return [];
+    return [{
+      id: typeof composition.id === "string" ? composition.id : crypto.randomUUID(),
+      cueId: composition.cueId,
+      preset: composition.preset,
+      parts,
+    }];
+  });
+}
+
+function activeCompositionPartsAt(time) {
+  return state.captionCompositions.flatMap((composition) => composition.parts
+    .filter((part) => part.text.trim() && time >= part.start && time < part.end)
+    .map((part) => ({ composition, part })));
+}
+
+function setActiveCaptionPart(role) {
+  state.activeCaptionPart = ["group", ...CAPTION_COMPOSITION_ROLES].includes(role) ? role : "group";
+  updateCaptionCompositionEditor();
+  updateCaption();
+}
+
+function updateCaptionCompositionEditor() {
+  const cue = state.cues[state.activeCue];
+  const composition = compositionForCue(cue);
+  const part = compositionPart(composition);
+  elements.removeCaptionComposition.disabled = !composition;
+  elements.compositionPresetButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.compositionPreset === composition?.preset);
+  });
+  elements.captionPartButtons.forEach((button) => {
+    const active = button.dataset.captionPart === state.activeCaptionPart;
+    button.classList.toggle("active", active);
+    button.disabled = !composition;
+    button.setAttribute("aria-pressed", String(active));
+  });
+  elements.captionPartEditor.hidden = !part;
+  if (!part) return;
+  if (document.activeElement !== elements.captionPartText) elements.captionPartText.value = part.text;
+  if (document.activeElement !== elements.captionPartStart) elements.captionPartStart.value = part.start.toFixed(2);
+  if (document.activeElement !== elements.captionPartEnd) elements.captionPartEnd.value = part.end.toFixed(2);
+  elements.captionPartScale.value = String(Math.round(part.scale * 100));
+  elements.captionPartScaleValue.value = `${Math.round(part.scale * 100)}%`;
+}
+
+function removeCaptionComposition() {
+  const composition = compositionForCue();
+  if (!composition) return;
+  state.captionCompositions.splice(state.captionCompositions.indexOf(composition), 1);
+  state.activeCaptionPart = "group";
+  updateCaptionCompositionEditor();
+  updateCaption();
+  renderCues();
+  saveLocalProject();
+  showToast("Legenda voltou ao modo normal.");
+}
+
+function updateSelectedCaptionPart(changes, persist = true) {
+  const part = compositionPart(compositionForCue());
+  if (!part) return;
+  Object.assign(part, changes);
+  if (part.end <= part.start) part.end = part.start + 0.05;
+  updateCaptionCompositionEditor();
+  updateCaption();
+  if (persist) saveLocalProject();
+}
+
+function moveCaptionCompositionPart(direction, amount = 2) {
+  const composition = compositionForCue();
+  if (!composition) return;
+  const format = captionFormatForDimensions();
+  const delta = {
+    left: [-amount, 0], right: [amount, 0], up: [0, -amount], down: [0, amount],
+  }[direction];
+  if (!delta) return;
+  const parts = state.activeCaptionPart === "group"
+    ? composition.parts
+    : [compositionPart(composition)].filter(Boolean);
+  parts.forEach((part) => {
+    const position = part.positions[format];
+    position.x = clamp(position.x + delta[0], 3, 97);
+    position.y = clamp(position.y + delta[1], 3, 97);
+  });
+  updateCaption();
+  saveLocalProject();
+}
+
 function easeOutCubic(value) {
   return 1 - Math.pow(1 - clamp(value), 3);
 }
@@ -1132,6 +1373,27 @@ function applyCaptionPositionStyles(cue = state.cues[state.activeCue]) {
   elements.captionOverlay.style.fontSize = `${scaledCaptionFontSize(renderedHeight, format)}px`;
   elements.captionOverlay.style.bottom = "auto";
   elements.positionButtons.forEach((button) => button.classList.toggle("active", button.dataset.position === preset));
+  applyCaptionCompositionPositionStyles();
+}
+
+function applyCaptionCompositionPositionStyles() {
+  const shellWidth = elements.videoShell.clientWidth;
+  const shellHeight = elements.videoShell.clientHeight;
+  const videoWidth = elements.video.videoWidth;
+  const videoHeight = elements.video.videoHeight;
+  const format = captionFormatForDimensions(videoWidth, videoHeight);
+  const scale = videoWidth && videoHeight ? Math.min(shellWidth / videoWidth, shellHeight / videoHeight) : 0;
+  const renderedWidth = scale ? videoWidth * scale : shellWidth;
+  const renderedHeight = scale ? videoHeight * scale : shellHeight;
+  const offsetX = (shellWidth - renderedWidth) / 2;
+  const offsetY = (shellHeight - renderedHeight) / 2;
+  elements.captionCompositionOverlay.dataset.format = format;
+  elements.captionCompositionOverlay.style.left = `${offsetX}px`;
+  elements.captionCompositionOverlay.style.top = `${offsetY}px`;
+  elements.captionCompositionOverlay.style.width = `${renderedWidth}px`;
+  elements.captionCompositionOverlay.style.height = `${renderedHeight}px`;
+  elements.captionCompositionOverlay.style.fontSize = `${scaledCaptionFontSize(renderedHeight, format)}px`;
+  elements.captionCompositionOverlay.style.fontFamily = captionFontFamily();
 }
 
 function setCaptionPosition(x, y, preset = "custom", persist = true) {
@@ -1173,6 +1435,12 @@ function setGlobalCaptionPosition(action) {
       y: clamp(cuePosition.y + appliedDelta, minY, maxY),
       preset: "custom",
     };
+  });
+  state.captionCompositions.forEach((composition) => {
+    composition.parts.forEach((part) => {
+      const partPosition = part.positions?.[format];
+      if (partPosition) partPosition.y = clamp(partPosition.y + appliedDelta, minY, maxY);
+    });
   });
   state.captionPosition = { ...captionPositionForDimensions() };
   applyCaptionPositionStyles();
@@ -1511,6 +1779,7 @@ async function generateAutomaticCaptions() {
   updateAutoCaptionAvailability();
   setAutoCaptionProgress("Preparando áudio...");
   const originalCues = state.cues;
+  const originalCompositions = state.captionCompositions;
   try {
     const transcriber = await getAutoCaptionTranscriber();
     const cache = new Map();
@@ -1540,6 +1809,7 @@ async function generateAutomaticCaptions() {
     state.cues = generated
       .sort((first, second) => first.start - second.start)
       .map((cue) => ({ ...cue, id: crypto.randomUUID(), end: Math.max(cue.start + 0.1, cue.end) }));
+    state.captionCompositions = [];
     state.activeCue = 0;
     renderCues();
     updateCaption();
@@ -1548,6 +1818,7 @@ async function generateAutomaticCaptions() {
     showToast("Legendas automáticas prontas para revisão.");
   } catch (error) {
     state.cues = originalCues;
+    state.captionCompositions = originalCompositions;
     console.error("Falha na legenda automática", error);
     showToast(error?.message === "empty-transcription"
       ? "Não foi possível identificar fala neste vídeo."
@@ -1618,6 +1889,7 @@ async function generateNarrationCaptions(trackId) {
       ...state.cues.filter((cue) => cue.end <= clip.start || cue.start >= clipEnd),
       ...generated,
     ].sort((first, second) => first.start - second.start);
+    state.captionCompositions = sanitizeCaptionCompositions(state.captionCompositions);
     state.activeCue = Math.max(0, state.cues.findIndex((cue) => cue.narrationClipId === clip.id));
     renderCues();
     updateCaption();
@@ -1659,6 +1931,7 @@ function synchronizeScript() {
     cursor = end + gap;
     return { id: crypto.randomUUID(), start, end, text };
   });
+  state.captionCompositions = [];
 
   state.activeCue = 0;
   renderCues();
@@ -1684,6 +1957,7 @@ function selectCue(index, seek = true) {
   updateMediaInspector();
   updateMediaPreview();
   updateCueInspector();
+  updateCaptionCompositionEditor();
 }
 
 function shiftCueRange(startIndex, requestedDelta) {
@@ -1691,21 +1965,34 @@ function shiftCueRange(startIndex, requestedDelta) {
   const firstCue = state.cues[startIndex];
   const minimumDelta = -firstCue.start;
   const delta = Math.max(minimumDelta, requestedDelta);
+  const shiftedCueIds = new Set(state.cues.slice(startIndex).map((cue) => cue.id));
 
   state.cues.slice(startIndex).forEach((cue) => {
     cue.start = Math.max(0, cue.start + delta);
     cue.end = Math.max(cue.start + 0.1, cue.end + delta);
   });
+  state.captionCompositions
+    .filter((composition) => shiftedCueIds.has(composition.cueId))
+    .flatMap((composition) => composition.parts)
+    .forEach((part) => {
+      part.start = Math.max(0, part.start + delta);
+      part.end = Math.max(part.start + 0.05, part.end + delta);
+    });
 }
 
 function updateCueStart(index, value) {
   const cue = state.cues[index];
   if (!cue) return;
+  const previousStart = cue.start;
 
   if (elements.linkTiming.checked) {
     shiftCueRange(index, value - cue.start);
   } else {
     cue.start = Math.min(value, cue.end - 0.1);
+    const composition = compositionForCue(cue);
+    composition?.parts.forEach((part) => {
+      if (Math.abs(part.start - previousStart) < 0.06) part.start = cue.start;
+    });
   }
   renderCues();
   selectCue(index);
@@ -1715,8 +2002,13 @@ function updateCueStart(index, value) {
 function updateCueEnd(index, value) {
   const cue = state.cues[index];
   if (!cue) return;
+  const previousEnd = cue.end;
   const videoDuration = projectDuration() || Infinity;
   cue.end = Math.min(videoDuration, Math.max(value, cue.start + 0.1));
+  const composition = compositionForCue(cue);
+  composition?.parts.forEach((part) => {
+    if (Math.abs(part.end - previousEnd) < 0.06) part.end = cue.end;
+  });
 
   if (state.cues[index + 1]) {
     const nextStart = cue.end;
@@ -1741,7 +2033,7 @@ function renderCues() {
   state.cues.forEach((cue, index) => {
     const item = document.createElement("button");
     item.type = "button";
-    item.className = `cue cue-track-block${index === state.activeCue ? " active" : ""}`;
+    item.className = `cue cue-track-block${index === state.activeCue ? " active" : ""}${compositionForCue(cue) ? " has-composition" : ""}`;
     item.dataset.cueId = cue.id;
     item.style.left = `${clamp(cue.start / duration) * 100}%`;
     item.style.width = `${Math.max(1.5, clamp((cue.end - cue.start) / duration) * 100)}%`;
@@ -1768,6 +2060,7 @@ function updateCueInspector() {
     }
     updateMobileDeleteButton();
     updatePropertiesPanel();
+    updateCaptionCompositionEditor();
     return;
   }
   if (document.activeElement !== elements.activeCueText) elements.activeCueText.value = cue.text;
@@ -1780,6 +2073,7 @@ function updateCueInspector() {
   if (document.activeElement !== elements.activeCueEnd) elements.activeCueEnd.value = cue.end.toFixed(1);
   updateMobileDeleteButton();
   updatePropertiesPanel();
+  updateCaptionCompositionEditor();
 }
 
 function clamp(value, minimum = 0, maximum = 1) {
@@ -2575,6 +2869,73 @@ function renderCaptionPreviewText(cue, time, text) {
   elements.captionOverlay.textContent = text;
 }
 
+function compositionPartMotion(part, time) {
+  const duration = Math.max(0.05, part.end - part.start);
+  const entryDuration = Math.min(0.22, duration * 0.42);
+  const exitDuration = Math.min(0.15, duration * 0.3);
+  const entry = easeOutCubic(clamp((time - part.start) / entryDuration));
+  const exit = clamp((part.end - time) / exitDuration);
+  let scale = 0.92 + 0.08 * entry;
+  let y = (1 - entry) * 0.3;
+  if (part.role === "impact") {
+    scale = entry < 0.72
+      ? 0.86 + (1.05 - 0.86) * easeOutCubic(entry / 0.72)
+      : 1.05 - 0.05 * easeOutCubic((entry - 0.72) / 0.28);
+    y = (1 - entry) * 0.42;
+  }
+  return {
+    alpha: entry * exit,
+    scale,
+    y,
+    blur: (1 - entry) * 0.08,
+  };
+}
+
+function renderCaptionCompositionPreview(time) {
+  const active = activeCompositionPartsAt(time);
+  if (!active.length) {
+    elements.captionCompositionOverlay.hidden = true;
+    elements.captionCompositionOverlay.replaceChildren();
+    delete elements.captionCompositionOverlay.dataset.renderKey;
+    return false;
+  }
+  applyCaptionCompositionPositionStyles();
+  const format = elements.captionCompositionOverlay.dataset.format || captionFormatForDimensions();
+  const renderKey = active.map(({ composition, part }) => `${composition.id}:${part.id}:${part.text}`).join("|");
+  if (elements.captionCompositionOverlay.dataset.renderKey !== renderKey) {
+    const nodes = active.map(({ composition, part }) => {
+      const node = document.createElement("span");
+      node.className = `caption-composition-part role-${part.role}`;
+      node.dataset.compositionId = composition.id;
+      node.dataset.partId = part.id;
+      node.dataset.role = part.role;
+      node.textContent = transformCaptionCase(part.text);
+      return node;
+    });
+    elements.captionCompositionOverlay.replaceChildren(...nodes);
+    elements.captionCompositionOverlay.dataset.renderKey = renderKey;
+  }
+  active.forEach(({ composition, part }) => {
+    const node = Array.from(elements.captionCompositionOverlay.children)
+      .find((item) => item.dataset.partId === part.id);
+    if (!node) return;
+    const position = part.positions[format] || part.positions.vertical;
+    const motion = compositionPartMotion(part, time);
+    const selected = composition.cueId === state.cues[state.activeCue]?.id
+      && (state.activeCaptionPart === "group" || state.activeCaptionPart === part.role);
+    node.classList.toggle("selected", selected);
+    node.style.left = `${position.x}%`;
+    node.style.top = `${position.y}%`;
+    node.style.fontSize = `${part.scale}em`;
+    node.style.color = part.role === "impact" ? elements.captionHighlightColor.value : elements.captionTextColor.value;
+    node.style.opacity = String(motion.alpha);
+    node.style.filter = motion.blur ? `blur(${motion.blur}em)` : "none";
+    node.style.transform = `translate(-50%, -50%) translateY(${motion.y}em) scale(${motion.scale})`;
+  });
+  elements.captionCompositionOverlay.hidden = false;
+  return true;
+}
+
 function captionMotion(cue, time, motionDistance = 24) {
   const duration = Math.max(0.1, cue.end - cue.start);
   const elapsed = clamp(time - cue.start, 0, duration);
@@ -2671,6 +3032,7 @@ function keepCueVisibleInsideList(cueElement) {
 function updateCaption() {
   const current = projectCurrentTime();
   const activeIndex = state.cues.findIndex((cue) => current >= cue.start && current < cue.end);
+  renderCaptionCompositionPreview(current);
 
   if (activeIndex >= 0) {
     const activeCue = state.cues[activeIndex];
@@ -2680,8 +3042,13 @@ function updateCaption() {
       activateCaptionComposition(undefined, undefined, activeCue);
       applyCaptionPositionStyles(activeCue);
     }
-    applyPreviewMotion(activeCue, current);
-    elements.captionOverlay.hidden = false;
+    const composition = compositionForCue(activeCue);
+    if (composition) {
+      elements.captionOverlay.hidden = true;
+    } else {
+      applyPreviewMotion(activeCue, current);
+      elements.captionOverlay.hidden = false;
+    }
     if (cueChanged || !elements.cueList.children[activeIndex]?.classList.contains("active")) {
       document.querySelectorAll(".cue").forEach((cue, index) => cue.classList.toggle("active", index === activeIndex));
       const activeElement = elements.cueList.children[activeIndex];
@@ -2788,6 +3155,7 @@ function loadVideo(file) {
   if (resetTimeline) {
     state.cuts = [];
     state.cues = [];
+    state.captionCompositions = [];
     state.activeCue = -1;
   }
   state.videoFile = file;
@@ -5575,7 +5943,9 @@ function closeTimelineGap(start, end) {
     else if (item.end > start) item.end = start;
   };
   [...state.overlayVideoClips, ...state.imageClips, ...state.audioClips, ...state.cues, ...state.cuts].forEach(shiftItem);
+  state.captionCompositions.flatMap((composition) => composition.parts).forEach(shiftItem);
   state.cues = state.cues.filter((cue) => cue.end - cue.start >= 0.05);
+  state.captionCompositions = sanitizeCaptionCompositions(state.captionCompositions);
   state.cuts = state.cuts.filter((cut) => cut.end - cut.start >= 0.05);
 }
 
@@ -5648,6 +6018,7 @@ function deleteSelectedMediaClip() {
     if (!state.overlayVideoClips.length && !state.imageClips.length && !state.audioClips.length) {
       state.cuts = [];
       state.cues = [];
+      state.captionCompositions = [];
       state.activeCue = -1;
     }
   }
@@ -6777,7 +7148,48 @@ function drawEditorialCaptionFrame(context, cue, width, height, time, motion) {
   context.restore();
 }
 
-function drawCaptionFrame(context, width, height, time) {
+function drawCaptionCompositionFrame(context, width, height, time) {
+  const active = activeCompositionPartsAt(time);
+  if (!active.length) return false;
+  const format = captionFormatForDimensions(width, height);
+  const baseSize = scaledCaptionFontSize(height, format);
+  const safeWidth = width * (format === "vertical" ? 0.84 : 0.9);
+
+  active.forEach(({ part }) => {
+    const position = part.positions[format] || part.positions.vertical;
+    const fontSize = Math.max(4, baseSize * part.scale);
+    const motion = compositionPartMotion(part, time);
+    const lineHeight = fontSize * (part.role === "impact" ? 0.94 : 1.04);
+    const weight = part.role === "impact" ? "italic 800" : part.role === "lead" ? "600" : "500";
+    context.save();
+    context.font = `${weight} ${fontSize}px ${captionFontFamily()}`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const lines = wrapCanvasText(context, transformCaptionCase(part.text), safeWidth).slice(0, 2);
+    const totalHeight = lines.length * lineHeight;
+    context.globalAlpha = motion.alpha;
+    context.translate(
+      width * position.x / 100,
+      height * position.y / 100 + motion.y * fontSize,
+    );
+    context.scale(motion.scale, motion.scale);
+    if (motion.blur) context.filter = `blur(${motion.blur * fontSize}px)`;
+    context.fillStyle = part.role === "impact"
+      ? elements.captionHighlightColor.value
+      : elements.captionTextColor.value;
+    context.shadowColor = elements.captionShadow.checked ? "rgba(0, 0, 0, 0.5)" : "transparent";
+    context.shadowBlur = elements.captionShadow.checked ? fontSize * 0.28 : 0;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = elements.captionShadow.checked ? fontSize * 0.11 : 0;
+    lines.forEach((line, index) => {
+      context.fillText(line, 0, -totalHeight / 2 + lineHeight * (index + 0.5));
+    });
+    context.restore();
+  });
+  return true;
+}
+
+function drawStandardCaptionFrame(context, width, height, time) {
   const cue = state.cues.find((item) => time >= item.start && time < item.end);
   if (!cue || !cue.text.trim()) return;
 
@@ -6875,6 +7287,14 @@ function drawCaptionFrame(context, width, height, time) {
     lines.forEach((line, index) => drawStyledCaptionText(context, line, 0, firstLineY + index * lineHeight, elements.captionTextColor.value));
   }
   context.restore();
+}
+
+function drawCaptionFrame(context, width, height, time) {
+  const cue = state.cues.find((item) => time >= item.start && time < item.end);
+  if (cue && !compositionForCue(cue)) {
+    drawStandardCaptionFrame(context, width, height, time);
+  }
+  drawCaptionCompositionFrame(context, width, height, time);
 }
 
 function supportedRecordingType() {
@@ -8077,10 +8497,11 @@ async function exportProject() {
   } else {
     const content = JSON.stringify(
       {
-        version: 2,
+        version: 3,
         videoName: state.videoName,
         script: elements.scriptInput.value,
         cues: state.cues,
+        captionCompositions: state.captionCompositions,
         style: {
           fontSize: Number(elements.fontSize.value),
           fontFamily: elements.fontFamily.value,
@@ -8179,6 +8600,7 @@ function saveLocalProject() {
     captionMode: state.captionMode,
     captionPreset: state.captionPreset,
     captionTemplate: state.captionTemplate,
+    captionCompositions: state.captionCompositions,
     textColor: elements.captionTextColor.value,
     highlightColor: elements.captionHighlightColor.value,
     backgroundColor: elements.captionBackgroundColor.value,
@@ -8280,6 +8702,7 @@ function restoreLocalProject() {
     });
     applyCaptionColors();
     if (Array.isArray(data.cues)) state.cues = data.cues;
+    state.captionCompositions = sanitizeCaptionCompositions(data.captionCompositions);
     if (Array.isArray(data.cuts)) {
       state.cuts = data.cuts.filter((cut) => !cut.layerMove).map((cut, index) => ({
         ...cut,
@@ -8445,6 +8868,71 @@ function finishCaptionDrag(event) {
 }
 elements.captionOverlay.addEventListener("pointerup", finishCaptionDrag);
 elements.captionOverlay.addEventListener("pointercancel", finishCaptionDrag);
+elements.captionCompositionOverlay.addEventListener("pointerdown", (event) => {
+  const target = event.target.closest(".caption-composition-part");
+  if (!target) return;
+  const composition = state.captionCompositions.find((item) => item.id === target.dataset.compositionId);
+  const part = composition?.parts.find((item) => item.id === target.dataset.partId);
+  if (!composition || !part) return;
+  event.preventDefault();
+  elements.video.pause();
+  const cueIndex = state.cues.findIndex((cue) => cue.id === composition.cueId);
+  if (cueIndex >= 0 && cueIndex !== state.activeCue) {
+    state.activeCue = cueIndex;
+    state.activeCaptionPart = part.role;
+    updateCueInspector();
+  } else if (state.activeCaptionPart !== "group") {
+    state.activeCaptionPart = part.role;
+  }
+  const format = captionFormatForDimensions();
+  const movingParts = state.activeCaptionPart === "group" ? composition.parts : [part];
+  state.draggingCaptionPart = {
+    pointerId: event.pointerId,
+    composition,
+    anchorPart: part,
+    startX: event.clientX,
+    startY: event.clientY,
+    format,
+    positions: new Map(movingParts.map((item) => [item.id, { ...item.positions[format] }])),
+  };
+  target.classList.add("dragging");
+  elements.captionCompositionOverlay.setPointerCapture?.(event.pointerId);
+  updateCaptionCompositionEditor();
+  updateCaption();
+});
+elements.captionCompositionOverlay.addEventListener("pointermove", (event) => {
+  const drag = state.draggingCaptionPart;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const bounds = elements.captionCompositionOverlay.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  const deltaX = (event.clientX - drag.startX) / bounds.width * 100;
+  const deltaY = (event.clientY - drag.startY) / bounds.height * 100;
+  drag.positions.forEach((position, id) => {
+    const part = drag.composition.parts.find((item) => item.id === id);
+    if (!part) return;
+    const raw = { x: position.x + deltaX, y: position.y + deltaY };
+    const next = drag.positions.size === 1 ? applyCenterMagnet(raw.x, raw.y) : raw;
+    part.positions[drag.format] = {
+      x: clamp(next.x, 3, 97),
+      y: clamp(next.y, 3, 97),
+    };
+  });
+  updateCaption();
+});
+function finishCaptionPartDrag(event) {
+  const drag = state.draggingCaptionPart;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  state.draggingCaptionPart = null;
+  hideAlignmentGuides();
+  elements.captionCompositionOverlay.querySelectorAll(".dragging").forEach((item) => item.classList.remove("dragging"));
+  if (elements.captionCompositionOverlay.hasPointerCapture?.(event.pointerId)) {
+    elements.captionCompositionOverlay.releasePointerCapture(event.pointerId);
+  }
+  saveLocalProject();
+  showToast(state.activeCaptionPart === "group" ? "Composição reposicionada." : "Parte reposicionada.");
+}
+elements.captionCompositionOverlay.addEventListener("pointerup", finishCaptionPartDrag);
+elements.captionCompositionOverlay.addEventListener("pointercancel", finishCaptionPartDrag);
 elements.captionOverlay.addEventListener("keydown", (event) => {
   const directions = {
     ArrowLeft: [-1, 0],
@@ -8600,9 +9088,47 @@ elements.toolTabs.forEach((button) => {
 });
 elements.captionPresetButtons.forEach((button) => {
   button.addEventListener("click", () => {
-    const preset = button.dataset.captionPreset;
-    applyCaptionPreset(preset === "editorial" && state.captionTemplate === "editorial" ? "clean" : preset);
+    applyCaptionPreset(button.dataset.captionPreset);
   });
+});
+elements.compositionPresetButtons.forEach((button) => {
+  button.addEventListener("click", () => createCaptionComposition(button.dataset.compositionPreset));
+});
+elements.captionPartButtons.forEach((button) => {
+  button.addEventListener("click", () => setActiveCaptionPart(button.dataset.captionPart));
+});
+elements.removeCaptionComposition.addEventListener("click", removeCaptionComposition);
+elements.captionPartText.addEventListener("input", () => {
+  updateSelectedCaptionPart({ text: elements.captionPartText.value }, false);
+});
+elements.captionPartText.addEventListener("change", saveLocalProject);
+elements.captionPartStart.addEventListener("change", () => {
+  const value = Math.max(0, Number(elements.captionPartStart.value) || 0);
+  updateSelectedCaptionPart({ start: value });
+});
+elements.captionPartEnd.addEventListener("change", () => {
+  const value = Math.max(0.05, Number(elements.captionPartEnd.value) || 0.05);
+  updateSelectedCaptionPart({ end: value });
+});
+elements.captionPartScale.addEventListener("input", () => {
+  const scale = clamp(Number(elements.captionPartScale.value) / 100, 0.5, 2.2);
+  elements.captionPartScaleValue.value = `${Math.round(scale * 100)}%`;
+  updateSelectedCaptionPart({ scale }, false);
+});
+elements.captionPartScale.addEventListener("change", saveLocalProject);
+elements.captionPartMoveButtons.forEach((button) => {
+  button.addEventListener("click", () => moveCaptionCompositionPart(button.dataset.captionPartMove));
+});
+elements.extendCaptionPart.addEventListener("click", () => {
+  const part = compositionPart(compositionForCue());
+  if (!part) return;
+  const nextCue = state.cues.find((cue) => cue.end > part.end + 0.05);
+  if (!nextCue) {
+    showToast("Esta parte já alcança o fim das legendas.");
+    return;
+  }
+  updateSelectedCaptionPart({ end: nextCue.end });
+  showToast("Parte estendida até o fim da próxima legenda.");
 });
 elements.captionModeButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -8881,7 +9407,9 @@ elements.captionLiveText?.addEventListener("input", () => {
 elements.activeCueStart.addEventListener("change", () => updateCueStart(state.activeCue, Math.max(0, Number(elements.activeCueStart.value) || 0)));
 elements.activeCueEnd.addEventListener("change", () => updateCueEnd(state.activeCue, Math.max(0, Number(elements.activeCueEnd.value) || 0)));
 function deleteActiveCue() {
-  if (!state.cues[state.activeCue]) return;
+  const cue = state.cues[state.activeCue];
+  if (!cue) return;
+  state.captionCompositions = state.captionCompositions.filter((composition) => composition.cueId !== cue.id);
   state.cues.splice(state.activeCue, 1);
   state.activeCue = Math.min(state.activeCue, state.cues.length - 1);
   renderCues();

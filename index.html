@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=104" />
+    <link rel="stylesheet" href="styles.css?v=105" />
   </head>
   <body>
     <header class="topbar">
@@ -159,6 +159,12 @@
           >
             Sua legenda aparece aqui
           </div>
+          <div
+            class="caption-composition-overlay"
+            id="captionCompositionOverlay"
+            aria-label="Composição editorial da legenda"
+            hidden
+          ></div>
         </div>
 
         <div class="quick-sync-actions">
@@ -250,7 +256,7 @@
 
           <div class="tool-panel caption-tools" data-tool-panel="caption">
             <div class="caption-presets" aria-label="Estilos rápidos de legenda">
-              <button class="active" type="button" data-caption-preset="editorial"><strong>Editorial</strong><span>Impacto auto</span></button>
+              <button class="active" type="button" data-caption-preset="editorial"><strong>Editorial automático</strong><span>Uma palavra</span></button>
               <button type="button" data-caption-preset="clean"><strong>Padrão</strong><span>Sem editorial</span></button>
               <button type="button" data-caption-preset="impact"><strong>Impacto</strong><span>Palavra</span></button>
               <button type="button" data-caption-preset="karaoke"><strong>Karaokê</strong><span>Destaque</span></button>
@@ -284,6 +290,51 @@
               <textarea id="captionLiveText" maxlength="120" spellcheck="true" placeholder="Selecione uma legenda para editar"></textarea>
               <output id="captionLiveCount" for="captionLiveText">0 / 120</output>
             </label>
+
+            <section class="caption-composer" id="captionComposer" aria-label="Composição editorial em camadas">
+              <div class="caption-composer-heading">
+                <span><strong>Composição em camadas</strong><small>Opcional, mantém os tempos da legenda</small></span>
+                <button id="removeCaptionComposition" type="button" disabled title="Voltar para a legenda normal">Remover</button>
+              </div>
+              <div class="caption-composition-presets" aria-label="Presets de composição">
+                <button type="button" data-composition-preset="stacked"><strong>Empilhada</strong><span>Texto + impacto + apoio</span></button>
+                <button type="button" data-composition-preset="hero"><strong>Impacto livre</strong><span>Palavra grande separada</span></button>
+                <button type="button" data-composition-preset="split"><strong>Editorial</strong><span>Composição assimétrica</span></button>
+              </div>
+              <div class="caption-part-tabs" aria-label="Parte que será editada">
+                <button class="active" type="button" data-caption-part="group">Conjunto</button>
+                <button type="button" data-caption-part="lead">Leitura</button>
+                <button type="button" data-caption-part="impact">Impacto</button>
+                <button type="button" data-caption-part="support">Apoio</button>
+              </div>
+              <div class="caption-part-editor" id="captionPartEditor" hidden>
+                <label class="caption-part-text">
+                  Texto da parte
+                  <input id="captionPartText" type="text" maxlength="120" spellcheck="true" />
+                </label>
+                <label>
+                  Início
+                  <input id="captionPartStart" type="number" min="0" step="0.05" inputmode="decimal" />
+                </label>
+                <label>
+                  Fim
+                  <input id="captionPartEnd" type="number" min="0" step="0.05" inputmode="decimal" />
+                </label>
+                <label>
+                  Escala
+                  <input id="captionPartScale" type="range" min="50" max="220" step="5" value="100" />
+                  <output id="captionPartScaleValue" for="captionPartScale">100%</output>
+                </label>
+                <div class="caption-part-position" aria-label="Mover parte selecionada">
+                  <span>Posição</span>
+                  <button type="button" data-caption-part-move="left" title="Mover para esquerda">←</button>
+                  <button type="button" data-caption-part-move="up" title="Mover para cima">↑</button>
+                  <button type="button" data-caption-part-move="down" title="Mover para baixo">↓</button>
+                  <button type="button" data-caption-part-move="right" title="Mover para direita">→</button>
+                </div>
+                <button class="caption-part-extend" id="extendCaptionPart" type="button">Estender até a próxima legenda</button>
+              </div>
+            </section>
 
             <div class="caption-colorbar" aria-label="Cores da legenda">
               <label class="color-control color-control-wide">
@@ -618,6 +669,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=104"></script>
+    <script src="app.js?v=105"></script>
   </body>
 </html>

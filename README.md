@@ -27,8 +27,10 @@ Editor de vídeo multifaixa com legendas sincronizadas, pensado para criação r
 - Oferece geração opcional de legenda automática pelo áudio do vídeo.
 - Permite revisar texto, início, fim e encadeamento dos trechos.
 - Inclui os modos Frase, Palavra e Karaokê.
-- Permite posicionar a composição inteira e reposicionar cada parte da legenda separadamente.
-- Oferece estilos editoriais com hierarquia entre texto normal e palavra de impacto.
+- Mantém o modo `Editorial automático`, que escolhe uma palavra de impacto dentro da própria legenda.
+- Oferece composições opcionais `Empilhada`, `Impacto livre` e `Editorial`, formadas por Leitura, Impacto e Apoio.
+- Permite editar texto, início, fim, escala e posição de cada parte da composição separadamente.
+- Permite mover a composição inteira e estender uma parte por várias legendas sem alterar a sincronização original.
 - Aplica entrada e saída suaves, escala, deslocamento curto e destaque cinético sem alterar os tempos originais.
 - Permite escolher fonte, tamanho, alinhamento, cor do texto, cor da palavra de destaque, fundo, sombra, contorno e espaçamento.
 - Usa composições independentes para vídeos verticais e horizontais, com áreas seguras para redes sociais.
