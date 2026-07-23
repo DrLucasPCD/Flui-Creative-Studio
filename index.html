@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=53" />
     <link rel="icon" type="image/svg+xml" href="icons/waveform-icon.svg?v=53" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32-v53.png" />
-    <link rel="stylesheet" href="styles.css?v=105" />
+    <link rel="stylesheet" href="styles.css?v=106" />
   </head>
   <body>
     <header class="topbar">
@@ -453,6 +453,11 @@
               <span><strong>Filtros</strong><small id="filterCatalogStatus">Carregando...</small><small id="filterTargetName">Vídeo principal</small></span>
               <button id="clearFilterPresetButton" type="button">Sem filtro</button>
             </div>
+            <label class="toggle-control track-scope-toggle">
+              <input id="applyFilterToTrack" type="checkbox" />
+              <span aria-hidden="true"></span>
+              Aplicar filtro a todos os vídeos da track
+            </label>
             <div class="filter-browser-controls">
               <input id="filterSearchInput" type="search" placeholder="Buscar filtro" aria-label="Buscar filtro" />
               <select id="filterCollectionSelect" class="select" aria-label="Coleção de filtros">
@@ -484,6 +489,11 @@
               <span><strong>Ajustes</strong><small id="colorTargetName">Ajustando: vídeo principal</small></span>
               <button id="resetAdjustmentsButton" type="button">Redefinir</button>
             </div>
+            <label class="toggle-control track-scope-toggle">
+              <input id="applyColorToTrack" type="checkbox" />
+              <span aria-hidden="true"></span>
+              Aplicar ajustes a todos os vídeos da track
+            </label>
             <div class="adjustment-grid">
               <label>Exposição<input type="range" data-video-adjustment="exposure" min="-200" max="200" value="0" /><output>0</output></label>
               <label>Brilho<input type="range" data-video-adjustment="brightness" min="-100" max="100" value="0" /><output>0</output></label>
@@ -641,8 +651,8 @@
           <div><dt><kbd>E</kbd></dt><dd>Abrir as opções de exportação</dd></div>
           <div><dt><kbd>L</kbd></dt><dd>Abrir a aba Legenda</dd></div>
           <div><dt><kbd>R</kbd></dt><dd>Abrir a aba Revisão</dd></div>
-          <div><dt><kbd>&lt;</kbd></dt><dd>Iniciar a próxima legenda no cursor</dd></div>
-          <div><dt><kbd>&gt;</kbd></dt><dd>Estender a legenda anterior até o cursor</dd></div>
+          <div><dt><kbd>,</kbd><kbd>&lt;</kbd></dt><dd>Iniciar a próxima legenda no cursor</dd></div>
+          <div><dt><kbd>.</kbd><kbd>&gt;</kbd></dt><dd>Estender a legenda anterior até o cursor</dd></div>
           <div><dt><kbd>Delete</kbd></dt><dd>Excluir a mídia ou legenda selecionada</dd></div>
           <div><dt><kbd>Option</kbd> + <kbd>setas</kbd></dt><dd>Reposicionar legenda ou enquadramento da grade</dd></div>
           <div><dt><kbd>Shift</kbd> + <kbd>Option</kbd> + <kbd>setas</kbd></dt><dd>Mover a legenda em passos maiores</dd></div>
@@ -669,6 +679,6 @@
     <canvas id="renderCanvas" hidden aria-hidden="true"></canvas>
     <canvas id="lutRenderCanvas" hidden aria-hidden="true"></canvas>
 
-    <script src="app.js?v=105"></script>
+    <script src="app.js?v=106"></script>
   </body>
 </html>

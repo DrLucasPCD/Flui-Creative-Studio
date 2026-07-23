@@ -1121,6 +1121,22 @@ h2 {
   transform: translateX(14px);
 }
 
+.track-scope-toggle {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid #3f4946;
+  border-radius: 6px;
+  background: #202625;
+  color: #dce4e1;
+  font-weight: 700;
+}
+
+.track-scope-toggle span {
+  flex: 0 0 auto;
+}
+
 .timeline-panel {
   display: flex;
   min-height: 0;

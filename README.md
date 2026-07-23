@@ -52,6 +52,7 @@ As famílias tipográficas incluem opções clássicas, modernas, editoriais, co
 
 - Inclui filtros com miniaturas para comparação rápida.
 - Permite escolher filtro, intensidade e ajustes de cor separadamente para cada vídeo.
+- Oferece chaves opcionais para aplicar o filtro/LUT ou os ajustes de cor a todos os vídeos da mesma trilha.
 - Organiza os filtros por coleções e permite buscar pelo nome.
 - Permite importar LUTs 3D `.cube`, visualizar o resultado e ajustar a intensidade.
 - Inclui ajustes de exposição, brilho, contraste, saturação, brilho da cor, temperatura, calor, matiz, realces, sombras e ponto preto.
@@ -79,7 +80,7 @@ O exportador oferece:
 - escolha automática do comercial vertical ou horizontal conforme a proporção final do projeto;
 - formatos SRT, VTT e JSON para exportar as legendas separadamente.
 
-Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar cada arquivo da sequência em uma única passagem, quadro a quadro e com timestamps constantes. O áudio é remontado offline a partir das trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém a barra de progresso, os quadros e o áudio sincronizados nas junções e também com múltiplos vídeos na grade.
+Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar cada arquivo da sequência em uma única passagem, quadro a quadro e com timestamps constantes. O áudio de vídeos MP4/MOV também é decodificado pelo Mediabunny antes da mixagem offline, evitando que o Safari/iPhone descarte silenciosamente o áudio da parte editada. A mixagem respeita trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém a barra de progresso, os quadros e o áudio sincronizados nas junções e também com múltiplos vídeos na grade.
 
 Se o navegador não oferecer os recursos necessários, o editor usa um caminho de compatibilidade em tempo real e informa o estado no modal de exportação. A opção HDR experimental foi removida porque navegadores não preservam com segurança os metadados dinâmicos de Dolby Vision durante a composição em canvas; a exportação SDR mantém LUTs, filtros e cores das legendas previsíveis no iPhone e no desktop.
 

@@ -153,6 +153,8 @@ const elements = {
   filterCollectionSelect: document.querySelector("#filterCollectionSelect"),
   filterPresetList: document.querySelector("#filterPresetList"),
   clearFilterPresetButton: document.querySelector("#clearFilterPresetButton"),
+  applyFilterToTrack: document.querySelector("#applyFilterToTrack"),
+  applyColorToTrack: document.querySelector("#applyColorToTrack"),
   lutPreviewCanvas: document.querySelector("#lutPreviewCanvas"),
   lutRenderCanvas: document.querySelector("#lutRenderCanvas"),
   toolTabs: document.querySelectorAll("[data-tool-tab]"),
@@ -275,6 +277,8 @@ const state = {
   fitCanvas: null,
   optimizedOutput: null,
   videoAdjustments: { ...DEFAULT_VIDEO_ADJUSTMENTS },
+  applyFilterToTrack: false,
+  applyColorToTrack: false,
   sequenceClips: [],
   activeSequenceIndex: 0,
   overlayVideoClips: [],
@@ -1646,6 +1650,70 @@ async function decodeVideoAudioWithMediabunny(file) {
   }
 }
 
+async function decodeAudioBufferWithMediabunny(file, context) {
+  const mediabunny = await import("./vendor/mediabunny-1.48.1.min.mjs");
+  const input = new mediabunny.Input({
+    formats: mediabunny.ALL_FORMATS,
+    source: new mediabunny.BlobSource(file, {
+      useStreamReader: true,
+      maxCacheSize: isIOSDevice() ? 2 * 1024 * 1024 : 4 * 1024 * 1024,
+    }),
+  });
+  try {
+    const track = await input.getPrimaryAudioTrack();
+    if (!track || !(await track.canDecode())) throw new Error("Este vídeo não possui áudio decodificável.");
+    const sink = new mediabunny.AudioBufferSink(track);
+    const chunks = [];
+    let sampleRate = 0;
+    let channelCount = 0;
+    let totalFrames = 0;
+    for await (const wrapped of sink.buffers()) {
+      const buffer = wrapped.buffer;
+      if (!buffer?.length) continue;
+      sampleRate ||= buffer.sampleRate;
+      channelCount ||= buffer.numberOfChannels;
+      if (buffer.sampleRate !== sampleRate || buffer.numberOfChannels !== channelCount) {
+        throw new Error("O formato do áudio muda durante o vídeo.");
+      }
+      chunks.push(Array.from(
+        { length: channelCount },
+        (_, channel) => new Float32Array(buffer.getChannelData(channel)),
+      ));
+      totalFrames += buffer.length;
+    }
+    if (!chunks.length || !sampleRate || !channelCount) {
+      throw new Error("O vídeo não retornou amostras de áudio.");
+    }
+    const decoded = context.createBuffer(channelCount, totalFrames, sampleRate);
+    let offset = 0;
+    chunks.forEach((chunk) => {
+      chunk.forEach((samples, channel) => decoded.copyToChannel(samples, channel, offset));
+      offset += chunk[0].length;
+    });
+    return decoded;
+  } finally {
+    input.dispose();
+  }
+}
+
+async function decodeAudioBufferForMix(file, context) {
+  const videoContainer = file?.type?.startsWith("video/")
+    || /\.(?:mp4|mov|m4v|webm)$/i.test(file?.name || "");
+  if (videoContainer) {
+    try {
+      return await decodeAudioBufferWithMediabunny(file, context);
+    } catch (error) {
+      console.warn(`Decodificação precisa de áudio indisponível para ${file?.name || "vídeo"}`, error);
+    }
+  }
+  try {
+    return await context.decodeAudioData(await file.arrayBuffer());
+  } catch (error) {
+    if (videoContainer) throw error;
+    return decodeAudioBufferWithMediabunny(file, context);
+  }
+}
+
 async function decodeVideoAudio(file) {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) return decodeVideoAudioWithMediabunny(file);
@@ -2392,6 +2460,27 @@ function isPrimarySequenceClip(clip) {
   return clip?.type === "sequence" && clip === state.sequenceClips[0];
 }
 
+function videoTrackIdForClip(clip) {
+  return clip?.type === "sequence" ? "base" : clip?.trackId || "base";
+}
+
+function videoTrackLabelForClip(clip) {
+  const trackId = videoTrackIdForClip(clip);
+  if (trackId === "base") return "V1";
+  const index = state.videoTrackOrder.indexOf(trackId);
+  return `V${index >= 0 ? index + 2 : 2}`;
+}
+
+function videoClipsInSameTrack(clip) {
+  const trackId = videoTrackIdForClip(clip);
+  return [
+    ...(trackId === "base" ? state.sequenceClips.filter((item) => !item.exportCommercial) : []),
+    ...state.overlayVideoClips.filter((item) => (
+      item.type === "video" && videoTrackIdForClip(item) === trackId
+    )),
+  ];
+}
+
 function colorProfileForClip(clip = filterTargetClip()) {
   const legacyPrimary = !clip || isPrimarySequenceClip(clip);
   return {
@@ -2426,6 +2515,36 @@ function setClipColorProfile(clip, changes) {
     if (Object.hasOwn(changes, "intensity")) state.lutIntensity = changes.intensity;
     if (Object.hasOwn(changes, "adjustments")) state.videoAdjustments = { ...changes.adjustments };
   }
+}
+
+function setScopedColorProfile(target, changes, scope) {
+  const applyToTrack = scope === "filter" ? state.applyFilterToTrack : state.applyColorToTrack;
+  const targets = applyToTrack ? videoClipsInSameTrack(target) : [target].filter(Boolean);
+  if (!targets.length) {
+    setClipColorProfile(target, changes);
+    return;
+  }
+  targets.forEach((clip) => setClipColorProfile(clip, changes));
+}
+
+function applyCurrentProfileToTrack(scope) {
+  const target = filterTargetClip();
+  if (!target) return;
+  const profile = colorProfileForClip(target);
+  if (scope === "filter") {
+    setScopedColorProfile(target, {
+      lut: profile.lut,
+      presetId: profile.presetId,
+      intensity: profile.intensity,
+    }, "filter");
+  } else {
+    setScopedColorProfile(target, { adjustments: profile.adjustments }, "color");
+  }
+  state.lutPreviewRenderer = null;
+  updateLutControls();
+  drawLutPreview();
+  saveLocalProject();
+  showToast(`${scope === "filter" ? "Filtro" : "Ajustes"} aplicado a todos os vídeos da track ${videoTrackLabelForClip(target)}.`);
 }
 
 function exportLutSurfaceForClip(clip) {
@@ -2539,12 +2658,17 @@ function updateLutControls() {
   const target = filterTargetClip();
   const profile = colorProfileForClip(target);
   const hasLut = Boolean(profile.lut);
+  const trackLabel = videoTrackLabelForClip(target);
   elements.lutStatus.textContent = hasLut ? `${profile.lut.name} · ${profile.lut.size}³` : "Sem LUT";
   if (elements.filterTargetName) {
-    elements.filterTargetName.textContent = target?.name ? `Aplicando em: ${target.name}` : "Aplicando em: vídeo principal";
+    elements.filterTargetName.textContent = state.applyFilterToTrack
+      ? `Aplicando em toda a track ${trackLabel}`
+      : target?.name ? `Aplicando em: ${target.name}` : "Aplicando em: vídeo principal";
   }
   if (elements.colorTargetName) {
-    elements.colorTargetName.textContent = target?.name ? `Ajustando: ${target.name}` : "Ajustando: vídeo principal";
+    elements.colorTargetName.textContent = state.applyColorToTrack
+      ? `Ajustando toda a track ${trackLabel}`
+      : target?.name ? `Ajustando: ${target.name}` : "Ajustando: vídeo principal";
   }
   elements.lutIntensity.value = String(profile.intensity);
   elements.lutIntensity.disabled = !hasLut;
@@ -2565,7 +2689,7 @@ async function loadLut(file) {
   const target = filterTargetClip();
   try {
     const lut = parseCubeLut(await file.text(), file.name);
-    setClipColorProfile(target, { lut, presetId: null, intensity: 100 });
+    setScopedColorProfile(target, { lut, presetId: null, intensity: 100 }, "filter");
     state.lutPreviewRenderer = null;
     updateLutControls();
     drawLutPreview();
@@ -2580,7 +2704,7 @@ async function loadLut(file) {
 
 function removeLut(notify = true, target = filterTargetClip()) {
   const hadLut = Boolean(colorProfileForClip(target).lut);
-  setClipColorProfile(target, { lut: null, presetId: null });
+  setScopedColorProfile(target, { lut: null, presetId: null }, "filter");
   elements.lutInput.value = "";
   updateLutControls();
   drawLutPreview();
@@ -2652,7 +2776,11 @@ async function loadLutPreset(preset, trigger = null, target = filterTargetClip()
     const fileName = decodeURIComponent(preset.path.split("/").at(-1));
     const lut = parseCubeLut(await response.text(), fileName);
     lut.name = preset.name;
-    setClipColorProfile(target, { lut, presetId: preset.id, intensity: colorProfileForClip(target).intensity || 100 });
+    setScopedColorProfile(target, {
+      lut,
+      presetId: preset.id,
+      intensity: colorProfileForClip(target).intensity || 100,
+    }, "filter");
     state.lutPreviewRenderer = null;
     updateLutControls();
     drawLutPreview();
@@ -7460,8 +7588,9 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
     for (const clip of state.sequenceClips) {
       let buffer;
       try {
-        buffer = await offline.decodeAudioData(await clip.file.arrayBuffer());
-      } catch {
+        buffer = await decodeAudioBufferForMix(clip.file, offline);
+      } catch (error) {
+        console.warn(`Áudio ignorado durante a mixagem: ${clip.name || "vídeo"}`, error);
         continue;
       }
       const rate = clipPlaybackRate(clip);
@@ -7499,8 +7628,9 @@ async function renderMixedAudioBuffer(sourceDuration, editedDuration, hasBaseAud
     if (!clipTrackIsVisible(clip)) return;
     let buffer;
     try {
-      buffer = await offline.decodeAudioData(await clip.file.arrayBuffer());
-    } catch {
+      buffer = await decodeAudioBufferForMix(clip.file, offline);
+    } catch (error) {
+      console.warn(`Áudio ignorado durante a mixagem: ${clip.name || "mídia"}`, error);
       return;
     }
     const rate = clipPlaybackRate(clip);
@@ -8561,6 +8691,8 @@ async function exportProject() {
         videoGridClipIds: state.videoGridClipIds,
         videoGridLayout: state.videoGridLayout,
         projectAspect: state.projectAspect,
+        applyFilterToTrack: state.applyFilterToTrack,
+        applyColorToTrack: state.applyColorToTrack,
         includeCommercial: elements.includeCommercial.checked,
         exportColorMode: selectedExportColorMode(),
         exportFrameRate: Number(elements.exportFrameRate.value),
@@ -8616,6 +8748,8 @@ function saveLocalProject() {
     videoGridClipIds: state.videoGridClipIds,
     videoGridLayout: state.videoGridLayout,
     projectAspect: state.projectAspect,
+    applyFilterToTrack: state.applyFilterToTrack,
+    applyColorToTrack: state.applyColorToTrack,
     includeCommercial: elements.includeCommercial.checked,
     lutIntensity: state.lutIntensity,
     lutPresetId: state.activeLutPresetId,
@@ -8672,6 +8806,10 @@ function restoreLocalProject() {
       ? data.videoGridLayout
       : "auto";
     state.projectAspect = PROJECT_ASPECTS[data.projectAspect] ? data.projectAspect : "source";
+    state.applyFilterToTrack = data.applyFilterToTrack === true;
+    state.applyColorToTrack = data.applyColorToTrack === true;
+    elements.applyFilterToTrack.checked = state.applyFilterToTrack;
+    elements.applyColorToTrack.checked = state.applyColorToTrack;
     elements.includeCommercial.checked = data.includeCommercial !== false;
     updateVideoGridButtons();
     updateProjectAspectControls();
@@ -8756,12 +8894,32 @@ elements.filterSearchInput.addEventListener("input", renderFilterPresets);
 elements.filterCollectionSelect.addEventListener("change", renderFilterPresets);
 elements.clearFilterPresetButton.addEventListener("click", () => removeLut());
 elements.lutIntensity.addEventListener("input", () => {
-  setClipColorProfile(filterTargetClip(), { intensity: Number(elements.lutIntensity.value) || 0 });
+  setScopedColorProfile(
+    filterTargetClip(),
+    { intensity: Number(elements.lutIntensity.value) || 0 },
+    "filter",
+  );
   elements.lutIntensityValue.value = `${elements.lutIntensity.value}%`;
   drawLutPreview();
   saveLocalProject();
 });
 elements.removeLutButton.addEventListener("click", () => removeLut());
+elements.applyFilterToTrack.addEventListener("change", () => {
+  state.applyFilterToTrack = elements.applyFilterToTrack.checked;
+  if (state.applyFilterToTrack) applyCurrentProfileToTrack("filter");
+  else {
+    updateLutControls();
+    saveLocalProject();
+  }
+});
+elements.applyColorToTrack.addEventListener("change", () => {
+  state.applyColorToTrack = elements.applyColorToTrack.checked;
+  if (state.applyColorToTrack) applyCurrentProfileToTrack("color");
+  else {
+    updateLutControls();
+    saveLocalProject();
+  }
+});
 elements.video.addEventListener("loadedmetadata", () => {
   const activeClip = activeSequenceClip();
   if (activeClip) {
@@ -9193,7 +9351,7 @@ elements.adjustmentInputs.forEach((input) => {
     const target = filterTargetClip();
     const adjustments = colorProfileForClip(target).adjustments;
     adjustments[input.dataset.videoAdjustment] = value;
-    setClipColorProfile(target, { adjustments });
+    setScopedColorProfile(target, { adjustments }, "color");
     if (input.nextElementSibling) input.nextElementSibling.value = String(value);
     drawLutPreview();
   });
@@ -9201,7 +9359,7 @@ elements.adjustmentInputs.forEach((input) => {
 });
 elements.resetAdjustmentsButton.addEventListener("click", () => {
   const target = filterTargetClip();
-  setClipColorProfile(target, { adjustments: DEFAULT_VIDEO_ADJUSTMENTS });
+  setScopedColorProfile(target, { adjustments: DEFAULT_VIDEO_ADJUSTMENTS }, "color");
   elements.adjustmentInputs.forEach((input) => {
     input.value = "0";
     if (input.nextElementSibling) input.nextElementSibling.value = "0";
@@ -9611,7 +9769,7 @@ document.addEventListener("keydown", (event) => {
     && elements.quickMediaModal.hidden
   ) {
     const key = event.key.toLowerCase();
-    if (["d", "n", "e", "l", "r", "<", ">"].includes(key)) {
+    if (["d", "n", "e", "l", "r", "<", ">", ",", "."].includes(key)) {
       event.preventDefault();
       if (key === "d") {
         if (selectedMediaClip()) duplicateSelectedMediaClip().catch((error) => showToast(error.message));
@@ -9627,10 +9785,10 @@ document.addEventListener("keydown", (event) => {
       } else if (key === "r") {
         elements.stage.classList.remove("tools-collapsed");
         activateToolTab("review");
-      } else if (key === "<") {
+      } else if (key === "<" || key === ",") {
         if (!elements.syncNextButton.disabled) elements.syncNextButton.click();
         else showToast("Não há uma próxima legenda disponível.");
-      } else if (key === ">") {
+      } else if (key === ">" || key === ".") {
         if (!elements.extendPreviousButton.disabled) elements.extendPreviousButton.click();
         else showToast("Não há uma legenda anterior disponível.");
       }
@@ -9738,7 +9896,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=104", { updateViaCache: "none" })
+      .register("service-worker.js?v=106", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
