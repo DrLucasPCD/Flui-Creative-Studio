@@ -78,6 +78,7 @@ O exportador oferece:
 - vídeo com legendas incorporadas;
 - opção, ativada por padrão, para anexar o comercial do Flui Creative Studio ao final;
 - escolha automática do comercial vertical ou horizontal conforme a proporção final do projeto;
+- bloqueio das legendas e composições editoriais assim que o comercial começa;
 - formatos SRT, VTT e JSON para exportar as legendas separadamente.
 
 Em navegadores compatíveis, o caminho otimizado usa WebCodecs e Mediabunny para codificar cada arquivo da sequência em uma única passagem, quadro a quadro e com timestamps constantes. O áudio de vídeos MP4/MOV também é decodificado pelo Mediabunny antes da mixagem offline, evitando que o Safari/iPhone descarte silenciosamente o áudio da parte editada. A mixagem respeita trilhas, cortes, volumes, velocidades, fades e áudios dos vídeos sobrepostos. Isso mantém a barra de progresso, os quadros e o áudio sincronizados nas junções e também com múltiplos vídeos na grade.

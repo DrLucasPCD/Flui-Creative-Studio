@@ -1219,6 +1219,15 @@ function activeCompositionPartsAt(time) {
     .map((part) => ({ composition, part })));
 }
 
+function captionContentEndTime() {
+  const commercial = state.sequenceClips.find((clip) => clip.exportCommercial);
+  return commercial ? commercial.start : Number.POSITIVE_INFINITY;
+}
+
+function captionsCanRenderAt(time) {
+  return Number.isFinite(time) && time < captionContentEndTime();
+}
+
 function setActiveCaptionPart(role) {
   state.activeCaptionPart = ["group", ...CAPTION_COMPOSITION_ROLES].includes(role) ? role : "group";
   updateCaptionCompositionEditor();
@@ -3159,6 +3168,15 @@ function keepCueVisibleInsideList(cueElement) {
 
 function updateCaption() {
   const current = projectCurrentTime();
+  if (!captionsCanRenderAt(current)) {
+    elements.captionOverlay.hidden = true;
+    elements.captionOverlay.style.opacity = "1";
+    elements.captionOverlay.style.filter = "none";
+    elements.captionCompositionOverlay.hidden = true;
+    elements.captionCompositionOverlay.replaceChildren();
+    delete elements.captionCompositionOverlay.dataset.renderKey;
+    return;
+  }
   const activeIndex = state.cues.findIndex((cue) => current >= cue.start && current < cue.end);
   renderCaptionCompositionPreview(current);
 
@@ -7418,6 +7436,7 @@ function drawStandardCaptionFrame(context, width, height, time) {
 }
 
 function drawCaptionFrame(context, width, height, time) {
+  if (!captionsCanRenderAt(time)) return;
   const cue = state.cues.find((item) => time >= item.start && time < item.end);
   if (cue && !compositionForCue(cue)) {
     drawStandardCaptionFrame(context, width, height, time);
@@ -9896,7 +9915,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=106", { updateViaCache: "none" })
+      .register("service-worker.js?v=107", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
