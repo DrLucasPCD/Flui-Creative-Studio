@@ -5104,11 +5104,12 @@ async function promoteSequenceClipToVideoTrack(clip, dropTarget, dropTime, segme
   const audioElement = createClipAudioElement(clip.url);
   const sourceStart = segmentStart;
   const sourceEnd = segmentEnd;
+  const segmentDuration = Math.max(0.05, sourceEnd - sourceStart);
+  const playbackRate = clipPlaybackRate(clip);
   const trackId = dropTarget.type === "insert"
     ? ensureVideoTrack(null, dropTarget.index)
     : dropTarget.trackId;
-  const duration = projectDuration();
-  const start = clamp(dropTime, 0, Math.max(0, duration - 0.1));
+  const start = Math.max(0, Number(dropTime) || 0);
   const overlayClip = {
     ...clip,
     id: crypto.randomUUID(),
@@ -5117,8 +5118,10 @@ async function promoteSequenceClipToVideoTrack(clip, dropTarget, dropTime, segme
     audioElement,
     trackId,
     start,
-    end: Math.min(duration, start + (sourceEnd - sourceStart)),
-    sourceOffset: Math.max(0, sourceStart - clip.start),
+    end: start + segmentDuration,
+    duration: segmentDuration,
+    sourceOffset: Math.max(0, (clip.sourceOffset || 0) + (sourceStart - clip.start) * playbackRate),
+    sourceSpan: segmentDuration * playbackRate,
     x: 50,
     y: 50,
     size: fittedOverlaySize(mediaElement),
@@ -5152,7 +5155,8 @@ async function promoteSequenceClipToVideoTrack(clip, dropTarget, dropTime, segme
   renderCuts();
   updatePlayer();
   saveLocalProject();
-  showToast(`Clipe movido visualmente para V${state.videoTrackOrder.indexOf(trackId) + 2}.`);
+  const trackName = trackId === "base" ? "V1" : `V${state.videoTrackOrder.indexOf(trackId) + 2}`;
+  showToast(`Clipe movido visualmente para ${trackName}.`);
 }
 
 function sequenceClipBlock(clip, index, duration, segment = { start: clip.start, end: clip.end }) {
@@ -5174,12 +5178,19 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
   block.addEventListener("pointerdown", (event) => {
     if (event.button !== undefined && event.button !== 0) return;
     event.preventDefault();
+    const blockBounds = block.getBoundingClientRect();
+    const segmentDuration = Math.max(0.05, segment.end - segment.start);
     state.draggingTimelineClip = {
       clipId: clip.id,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       laneWidth: elements.sequenceTrackLane.clientWidth,
+      grabOffsetTime: clamp(
+        ((event.clientX - blockBounds.left) / Math.max(1, blockBounds.width)) * segmentDuration,
+        0,
+        segmentDuration,
+      ),
       moved: false,
       magneticCutId: null,
       block,
@@ -5236,7 +5247,7 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
     const drag = state.draggingTimelineClip;
     if (!drag || drag.clipId !== clip.id) return;
     const dropTarget = state.activeVideoDropTarget;
-    const dropTime = timelineTimeAtClientX(event.clientX);
+    const dropTime = Math.max(0, timelineTimeAtClientX(event.clientX) - drag.grabOffsetTime);
     const magneticCutId = drag.magneticCutId;
     state.draggingTimelineClip = null;
     block.style.transform = "";
@@ -5247,25 +5258,49 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
     showVideoDropTarget(null);
     if (block.hasPointerCapture?.(event.pointerId)) block.releasePointerCapture(event.pointerId);
     if (magneticCutId) {
-      joinCutMagnetically(magneticCutId);
+      const magneticCut = state.cuts.find((cut) => cut.id === magneticCutId);
+      if (magneticCut?.layerMove) {
+        promoteSequenceClipToVideoTrack(
+          clip,
+          { type: "track", trackId: "base" },
+          magneticCut.start,
+          segment.start,
+          segment.end,
+        ).catch((error) => showToast(error.message));
+      } else {
+        joinCutMagnetically(magneticCutId);
+      }
     } else if (drag.moved && dropTarget) {
       promoteSequenceClipToVideoTrack(clip, dropTarget, dropTime, segment.start, segment.end)
         .catch((error) => showToast(error.message));
     } else if (drag.moved && drag.horizontal) {
-      const laneBounds = elements.sequenceTrackLane.getBoundingClientRect();
-      const oldIndex = state.sequenceClips.findIndex((item) => item.id === clip.id);
-      const targetIndex = clamp(
-        Math.floor(((event.clientX - laneBounds.left) / Math.max(1, laneBounds.width)) * state.sequenceClips.length),
-        0,
-        state.sequenceClips.length - 1,
-      );
-      state.sequenceClips.splice(oldIndex, 1);
-      state.sequenceClips.splice(targetIndex, 0, clip);
-      refreshSequenceTiming();
-      renderMediaTracks();
-      seekProjectTime(clip.start).catch(() => {});
-      saveLocalProject();
-      showToast("Parte movida na sequência.");
+      const hasMovedLayer = state.cuts.some((cut) => isBaseCut(cut) && cut.layerMove);
+      if (hasMovedLayer) {
+        // Once a source clip leaves V1, keep the hidden source sequence as the
+        // playback clock and position the remaining visible clips independently.
+        promoteSequenceClipToVideoTrack(
+          clip,
+          { type: "track", trackId: "base" },
+          dropTime,
+          segment.start,
+          segment.end,
+        ).catch((error) => showToast(error.message));
+      } else {
+        const laneBounds = elements.sequenceTrackLane.getBoundingClientRect();
+        const oldIndex = state.sequenceClips.findIndex((item) => item.id === clip.id);
+        const targetIndex = clamp(
+          Math.floor(((event.clientX - laneBounds.left) / Math.max(1, laneBounds.width)) * state.sequenceClips.length),
+          0,
+          state.sequenceClips.length - 1,
+        );
+        state.sequenceClips.splice(oldIndex, 1);
+        state.sequenceClips.splice(targetIndex, 0, clip);
+        refreshSequenceTiming();
+        renderMediaTracks();
+        seekProjectTime(clip.start).catch(() => {});
+        saveLocalProject();
+        showToast("Parte movida na sequência.");
+      }
     } else if (!drag.moved) {
       selectClip();
     }
@@ -5294,7 +5329,13 @@ function visibleSequenceSegments(clip) {
 
 function visibleTrackClipSegments(clip) {
   const gaps = state.cuts
-    .filter((cut) => cut.ripple === false && (cut.targetKey || "base") === cutKeyForClip(clip) && cut.start < clip.end && cut.end > clip.start)
+    .filter((cut) => (
+      cut.ripple === false
+      && !cut.layerMove
+      && (cut.targetKey || "base") === cutKeyForClip(clip)
+      && cut.start < clip.end
+      && cut.end > clip.start
+    ))
     .sort((a, b) => a.start - b.start);
   if (!gaps.length) return null;
   const segments = [];
@@ -5408,6 +5449,7 @@ function syncTimelineJunctions() {
   };
 
   const baseClips = [...state.sequenceClips, ...visualTrackClips("base")]
+    .filter((clip) => mediaContentEnd(clip) > clip.start + 0.03)
     .sort((first, second) => first.start - second.start);
   for (let index = 0; index < baseClips.length - 1; index += 1) {
     const from = baseClips[index];
@@ -6364,7 +6406,13 @@ function isBaseCut(cut) {
 
 function clipHasOpenGap(clip, time) {
   const key = cutKeyForClip(clip);
-  return state.cuts.some((cut) => cut.ripple === false && (cut.targetKey || "base") === key && time >= cut.start && time < cut.end);
+  return state.cuts.some((cut) => (
+    cut.ripple === false
+    && (!cut.layerMove || clip?.type === "sequence")
+    && (cut.targetKey || "base") === key
+    && time >= cut.start
+    && time < cut.end
+  ));
 }
 
 function rippleCutsForClip(clip) {
@@ -9915,7 +9963,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=107", { updateViaCache: "none" })
+      .register("service-worker.js?v=108", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
