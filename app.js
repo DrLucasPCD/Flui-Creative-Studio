@@ -5016,20 +5016,47 @@ function mediaClipBlock(clip, type, duration, segment = null) {
     drag.magneticCutId = null;
     elements.cutLayer.querySelectorAll(".cut-region.magnetic-target")
       .forEach((region) => region.classList.remove("magnetic-target"));
+    const hoveredVideoTarget = ["video", "image"].includes(type) && drag.moved
+      ? videoDropTargetAt(event.clientY)
+      : null;
+    const hoveredAudioTarget = type === "audio" && drag.moved
+      ? audioDropTargetAt(event.clientY)
+      : null;
     const delta = ((event.clientX - drag.startX) / Math.max(1, drag.laneWidth)) * duration;
     if (!segment) {
-      let nextStart = clamp(drag.initialStart + delta, 0, Math.max(0, duration - drag.duration));
+      // A clip may begin at the current project end; releasing it there grows
+      // the timeline so clips can be arranged sequentially.
+      const maximumStart = Math.max(duration, drag.initialStart);
+      let nextStart = clamp(drag.initialStart + delta, 0, maximumStart);
       if (elements.magneticCuts.checked && ["video", "image", "audio"].includes(type)) {
-        const siblings = type === "audio"
-          ? state.audioClips.filter((item) => item !== clip && (item.trackId || "audio-base") === (clip.trackId || "audio-base"))
-          : visualTrackClips(clip.trackId || "base").filter((item) => item !== clip);
-        const boundaries = [0, duration, ...siblings.flatMap((item) => [item.start, item.end])];
+        const laneBounds = block.parentElement.getBoundingClientRect();
+        if (deltaX > 0 && event.clientX >= laneBounds.right - 24) nextStart = duration;
+        const targetTrackId = type === "audio"
+          ? hoveredAudioTarget?.type === "track"
+            ? hoveredAudioTarget.trackId
+            : clip.trackId || "audio-base"
+          : hoveredVideoTarget?.type === "track"
+            ? hoveredVideoTarget.trackId
+            : clip.trackId || "base";
+        const siblingRanges = type === "audio"
+          ? state.audioClips
+            .filter((item) => item !== clip && (item.trackId || "audio-base") === targetTrackId)
+            .map((item) => ({ start: item.start, end: item.end }))
+          : [
+              ...visualTrackClips(targetTrackId)
+                .filter((item) => item !== clip)
+                .map((item) => ({ start: item.start, end: item.end })),
+              ...(targetTrackId === "base"
+                ? state.sequenceClips.flatMap((item) => visibleSequenceSegments(item))
+                : []),
+            ];
+        const boundaries = [0, duration, ...siblingRanges.flatMap((item) => [item.start, item.end])];
         const threshold = Math.max(0.08, (14 / Math.max(1, drag.laneWidth)) * duration);
         const candidates = boundaries.flatMap((boundary) => [
           { start: boundary, distance: Math.abs(nextStart - boundary) },
           { start: boundary - drag.duration, distance: Math.abs(nextStart + drag.duration - boundary) },
         ]).sort((a, b) => a.distance - b.distance);
-        if (candidates[0]?.distance <= threshold) nextStart = clamp(candidates[0].start, 0, Math.max(0, duration - drag.duration));
+        if (candidates[0]?.distance <= threshold) nextStart = clamp(candidates[0].start, 0, maximumStart);
         block.classList.toggle("magnetic-snap", candidates[0]?.distance <= threshold);
       }
       clip.start = nextStart;
@@ -5038,11 +5065,11 @@ function mediaClipBlock(clip, type, duration, segment = null) {
     }
     if (["video", "image"].includes(type) && drag.moved) {
       block.style.transform = `translateY(${deltaY}px)`;
-      showVideoDropTarget(videoDropTargetAt(event.clientY));
+      showVideoDropTarget(hoveredVideoTarget);
     }
     if (type === "audio" && drag.moved && Math.abs(deltaY) > 5) {
       block.style.transform = `translateY(${deltaY}px)`;
-      showAudioDropTarget(audioDropTargetAt(event.clientY));
+      showAudioDropTarget(hoveredAudioTarget);
     }
     elements.mediaClipStart.value = clip.start.toFixed(1);
     elements.mediaClipEnd.value = clip.end.toFixed(1);
@@ -5247,7 +5274,9 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
     const drag = state.draggingTimelineClip;
     if (!drag || drag.clipId !== clip.id) return;
     const dropTarget = state.activeVideoDropTarget;
-    const dropTime = Math.max(0, timelineTimeAtClientX(event.clientX) - drag.grabOffsetTime);
+    const laneBounds = elements.sequenceTrackLane.getBoundingClientRect();
+    const pointerTime = ((event.clientX - laneBounds.left) / Math.max(1, laneBounds.width)) * duration;
+    const dropTime = clamp(pointerTime - drag.grabOffsetTime, 0, duration);
     const magneticCutId = drag.magneticCutId;
     state.draggingTimelineClip = null;
     block.style.transform = "";
@@ -5286,7 +5315,6 @@ function sequenceClipBlock(clip, index, duration, segment = { start: clip.start,
           segment.end,
         ).catch((error) => showToast(error.message));
       } else {
-        const laneBounds = elements.sequenceTrackLane.getBoundingClientRect();
         const oldIndex = state.sequenceClips.findIndex((item) => item.id === clip.id);
         const targetIndex = clamp(
           Math.floor(((event.clientX - laneBounds.left) / Math.max(1, laneBounds.width)) * state.sequenceClips.length),
@@ -9481,22 +9509,25 @@ elements.audioTrackInput.addEventListener("change", async (event) => {
   await addAudioClips(Array.from(event.target.files || []), trackId);
   event.target.value = "";
 });
-function updateSelectedClipTiming() {
+function updateSelectedClipTiming(event) {
   const clip = selectedMediaClip();
   if (!clip) return;
   if (clip.type === "sequence") return;
   const duration = projectDuration() || Infinity;
+  const previousSpan = Math.max(0.1, clip.end - clip.start);
   const requestedStart = clamp(Number(elements.mediaClipStart.value) || 0, 0, duration);
-  const requestedEndValue = Number(elements.mediaClipEnd.value) || requestedStart + 0.1;
-  const requestedEnd = imageCanExtendTrack(clip)
-    ? Math.max(0, requestedEndValue)
-    : clamp(requestedEndValue, 0, duration);
-  clip.start = Math.min(requestedStart, Math.max(0, duration - 0.1));
+  const requestedEndValue = event?.target === elements.mediaClipStart
+    ? requestedStart + previousSpan
+    : Number(elements.mediaClipEnd.value) || requestedStart + 0.1;
+  const requestedEnd = Math.max(0, requestedEndValue);
+  clip.start = requestedStart;
   const mediaDuration = clip.type === "audio" ? clip.audioElement?.duration : clip.mediaElement?.duration;
-  const sourceLimit = Number.isFinite(mediaDuration) ? clip.start + mediaDuration - (clip.sourceOffset || 0) : Infinity;
-  const endLimit = clip.type === "image" && imageCanExtendTrack(clip)
+  const sourceLimit = Number.isFinite(mediaDuration)
+    ? clip.start + Math.max(0, mediaDuration - (clip.sourceOffset || 0)) / clipPlaybackRate(clip)
+    : Infinity;
+  const endLimit = clip.type === "image"
     ? Infinity
-    : Math.min(duration, sourceLimit);
+    : sourceLimit;
   clip.end = Math.min(endLimit, Math.max(clip.start + 0.1, requestedEnd));
   clip.sourceSpan = (clip.end - clip.start) * clipPlaybackRate(clip);
   renderMediaTracks();
@@ -9963,7 +9994,7 @@ if ("serviceWorker" in navigator) {
   });
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("service-worker.js?v=108", { updateViaCache: "none" })
+      .register("service-worker.js?v=109", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => {});
   });
